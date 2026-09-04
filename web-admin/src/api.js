@@ -28,6 +28,7 @@ export const me = () => api('GET', '/api/auth/me')
 export const changePassword = (oldPassword, newPassword) =>
   api('POST', '/api/auth/password', { oldPassword, newPassword })
 export const fetchSnapshot = () => api('GET', '/api/contacts')
+export const getVersion = () => api('GET', '/api/version')
 export const createContact = (payload) => api('POST', '/api/contacts', payload)
 export const updateContact = (id, payload) => api('PUT', `/api/contacts/${id}`, payload)
 export const deleteContact = (id) => api('DELETE', `/api/contacts/${id}`)

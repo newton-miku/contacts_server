@@ -278,3 +278,16 @@ func (s *Store) DataVersion(ctx context.Context) (int64, string, error) {
 	}
 	return v, ts, nil
 }
+
+// SchemaVersion 返回数据库 schema_version（迁移后为当前结构版本，如 8）。
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	vs, err := s.metaGet(ctx, "schema_version")
+	if err != nil {
+		return 0, err
+	}
+	var v int
+	if _, err := fmt.Sscanf(vs, "%d", &v); err != nil {
+		return 0, fmt.Errorf("parse schema_version %q: %w", vs, err)
+	}
+	return v, nil
+}

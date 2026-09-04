@@ -1,15 +1,21 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { DataBoard, Phone, Lock, SwitchButton, User, OfficeBuilding, Avatar, Tickets, Search } from '@element-plus/icons-vue'
 import { session, signOut } from '../stores/session'
 import { pb, loadPhonebook } from '../stores/phonebook'
-import { fmtTime } from '../api'
+import { fmtTime, getVersion } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 
-const versionText = computed(() => `版本 ${pb.version} · ${fmtTime(pb.updatedAt)}`)
+// 程序/发布版本（GET /api/version 的 appVersion，构建期 -ldflags 注入）。
+// 与「数据版本」（meta.data_version，每次写 +1，客户端缓存同步用）是两个概念：
+// 顶栏主文案显示程序版本，悬停提示展示 数据版本/结构版本/更新时间。
+const appMeta = ref({ appVersion: 'dev', version: 0, updatedAt: '', schemaVersion: 0 })
+const versionTitle = computed(
+  () => `数据版本 ${appMeta.value.version} · 结构 v${appMeta.value.schemaVersion} · 更新于 ${fmtTime(appMeta.value.updatedAt)}`,
+)
 const userName = computed(() => {
   const u = session.user
   return u?.displayName ? `${u.displayName}（${u.username}）` : u?.username ?? ''
@@ -27,6 +33,11 @@ async function logout() {
 }
 
 onMounted(() => {
+  getVersion()
+    .then((m) => {
+      if (m?.appVersion) appMeta.value = m
+    })
+    .catch(() => {})
   if (!pb.contacts.length && !pb.loading) loadPhonebook({ silent: true })
 })
 </script>
@@ -79,8 +90,8 @@ onMounted(() => {
       <el-header class="topbar">
         <div class="crumb">{{ route.meta.title || '' }}</div>
         <div class="actions">
-          <el-tag type="primary" effect="light" :title="`数据更新时间：${fmtTime(pb.updatedAt)}`">
-            {{ versionText }}
+          <el-tag type="primary" effect="light" :title="versionTitle">
+            版本 {{ appMeta.appVersion || 'dev' }}
           </el-tag>
           <el-tooltip :content="roleText || ''" placement="bottom">
             <el-tag :type="isSuper ? 'danger' : 'warning'" effect="light" size="small">
