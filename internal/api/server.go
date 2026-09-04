@@ -352,6 +352,53 @@ func (s *Server) staffUnitIDs(r *http.Request) ([]int64, error) {
 	return s.store.UserUnitIDs(r.Context(), u.ID)
 }
 
+// authChannel 返回本次请求的认证通道：cookie=浏览器/网页会话，bearer=App/脚本（Bearer 头），
+// 空=匿名。与 resolveToken 同源判断：Cookie 优先（网页会话），纯 Bearer 视为 App/手机端。
+// 用于区分「网页后台 unit 只管绑定单位」与「手机端 unit/enduser 可见=绑定单位∪公开单位」。
+func (s *Server) authChannel(r *http.Request) string {
+	if c, err := r.Cookie(s.sessionName); err == nil && c.Value != "" {
+		return "cookie"
+	}
+	ah := r.Header.Get("Authorization")
+	if len(ah) > 7 && strings.EqualFold(ah[:7], "Bearer ") {
+		return "bearer"
+	}
+	return ""
+}
+
+// accessUnitIDs 返回 GET /api/contacts 读接口的可见单位集合（可见范围，设计 §3）：
+//   匿名 / super       → nil（全部；匿名公开读本期保留，见设计 §6 过渡）
+//   unit（cookie/网页） → 绑定单位（网页列表不掺入公开单位，写范围=读范围一致）
+//   enduser、unit(bearer/app) → 绑定单位 ∪ 公开单位（手机端可见范围；全为公开单位也放行）
+// 返回空切片 = “一条也看不到”。
+func (s *Server) accessUnitIDs(r *http.Request) ([]int64, error) {
+	u := userFrom(r)
+	if u.ID == 0 || u.Role == store.RoleSuper {
+		return nil, nil
+	}
+	if u.Role == store.RoleUnit && s.authChannel(r) == "cookie" {
+		return s.store.UserUnitIDs(r.Context(), u.ID)
+	}
+	bound, err := s.store.UserUnitIDs(r.Context(), u.ID)
+	if err != nil {
+		return nil, err
+	}
+	pub, err := s.store.PublicUnitIDs(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int64]bool, len(bound)+len(pub))
+	out := make([]int64, 0, len(bound)+len(pub))
+	for _, id := range append(append([]int64{}, bound...), pub...) {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // managesUnit 判断当前登录管理员是否被允许管理该单位（super 恒 true）。
 func (s *Server) managesUnit(r *http.Request, unitID int64) (bool, error) {
 	u := userFrom(r)

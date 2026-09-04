@@ -46,7 +46,7 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), userKey, u)
 		r = r.WithContext(ctx)
 	}
-	unitIDs, err := s.staffUnitIDs(r)
+	unitIDs, err := s.accessUnitIDs(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
 		return

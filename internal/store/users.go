@@ -8,13 +8,14 @@ import (
 
 // 账号角色。
 const (
-	RoleSuper = "super" // 超级管理员：管单位/管理员/日志 + 全部数据
-	RoleUnit  = "unit"  // 单位管理员：只能管绑定单位的联系人
+	RoleSuper   = "super"   // 超级管理员：管单位/管理员/日志 + 全部数据
+	RoleUnit    = "unit"    // 单位管理员：只能管绑定单位的联系人
+	RoleEndUser = "enduser" // 只读人员账号：仅手机端可登录，可见范围=绑定单位 ∪ 公开单位
 )
 
-// User 后台账号。role 取 RoleSuper/RoleUnit。
+// User 后台账号。role 取 RoleSuper/RoleUnit/RoleEndUser。
 // MustChangePassword=1 表示该账号仍在使用初始/重置的密码，登录后必须先改密才能做其它操作。
-// UnitIDs/UnitNames 为可选项，查询「管理端账号列表/me」时由 store 一并带出。
+// UnitIDs/UnitNames 为可选项，查询「管理端账号列表/me」时由 store 一并带出（super 无绑定）。
 type User struct {
 	ID                 int64    `json:"id"`
 	Username           string   `json:"username"`

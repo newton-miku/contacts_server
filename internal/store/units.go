@@ -12,17 +12,34 @@ import (
 var ErrUnitInUse = errors.New("store: unit in use")
 
 // Unit 对应预定义的单位列表；联系人挂在其下，单位管理员按绑定单位管数据。
+// IsPublic=1 表示「公开单位」：其联系人任何登录用户（enduser/unit）可见（“全局可见”）。
 type Unit struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	SortOrder int    `json:"sortOrder"`
 	CreatedAt string `json:"createdAt"`
+	IsPublic  bool   `json:"isPublic"`
+}
+
+const unitCols = `id, name, sort_order, created_at, is_public`
+
+func scanUnit(row Scanner) (Unit, error) {
+	var u Unit
+	var isPublic int
+	if err := row.Scan(&u.ID, &u.Name, &u.SortOrder, &u.CreatedAt, &isPublic); err != nil {
+		if err == sql.ErrNoRows {
+			return Unit{}, ErrNotFound
+		}
+		return Unit{}, err
+	}
+	u.IsPublic = isPublic == 1
+	return u, nil
 }
 
 // ListUnits 返回全部单位（按 sort_order、id 排序）。
 func (s *Store) ListUnits(ctx context.Context) ([]Unit, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, sort_order, created_at FROM units ORDER BY sort_order, id`)
+		`SELECT `+unitCols+` FROM units ORDER BY sort_order, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -30,13 +47,32 @@ func (s *Store) ListUnits(ctx context.Context) ([]Unit, error) {
 
 	units := []Unit{}
 	for rows.Next() {
-		var u Unit
-		if err := rows.Scan(&u.ID, &u.Name, &u.SortOrder, &u.CreatedAt); err != nil {
+		u, err := scanUnit(rows)
+		if err != nil {
 			return nil, err
 		}
 		units = append(units, u)
 	}
 	return units, rows.Err()
+}
+
+// PublicUnitIDs 返回全部公开单位 id（“全局可见”集合）。手机/普通账号的读范围 = 绑定单位 ∪ 公开单位。
+func (s *Store) PublicUnitIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM units WHERE is_public = 1 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // UnitExists 判断单位是否存在（写联系人前校验用）。
@@ -58,28 +94,34 @@ func (s *Store) UnitExists(ctx context.Context, id int64) (bool, error) {
 // UnitByID 按 id 查单位；不存在返回 ErrNotFound。
 func (s *Store) UnitByID(ctx context.Context, id int64) (Unit, error) {
 	var u Unit
+	var isPublic int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, sort_order, created_at FROM units WHERE id = ?`, id).
-		Scan(&u.ID, &u.Name, &u.SortOrder, &u.CreatedAt)
+		`SELECT `+unitCols+` FROM units WHERE id = ?`, id).
+		Scan(&u.ID, &u.Name, &u.SortOrder, &u.CreatedAt, &isPublic)
 	if err == sql.ErrNoRows {
 		return Unit{}, ErrNotFound
 	}
 	if err != nil {
 		return Unit{}, err
 	}
+	u.IsPublic = isPublic == 1
 	return u, nil
 }
 
 // CreateUnit 新建单位。同名单位已存在时返回 ErrDuplicateName。
-func (s *Store) CreateUnit(ctx context.Context, name string, sortOrder int) (Unit, error) {
+func (s *Store) CreateUnit(ctx context.Context, name string, sortOrder int, isPublic bool) (Unit, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Unit{}, errors.New("单位名称不能为空")
 	}
+	isP := 0
+	if isPublic {
+		isP = 1
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO units(name, sort_order, created_at) VALUES(?, ?, ?)`,
-		name, sortOrder, now)
+		`INSERT INTO units(name, sort_order, is_public, created_at) VALUES(?, ?, ?, ?)`,
+		name, sortOrder, isP, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Unit{}, ErrDuplicateName
@@ -161,14 +203,19 @@ func (s *Store) EnsureUnits(ctx context.Context, names []string) (byName map[str
 	return byName, created, nil
 }
 
-// UpdateUnit 修改单位名称/排序；不存在返回 ErrNotFound，重名返回 ErrDuplicateName。
-func (s *Store) UpdateUnit(ctx context.Context, id int64, name string, sortOrder int) (Unit, error) {
+// UpdateUnit 修改单位名称/排序/公开标记；不存在返回 ErrNotFound，重名返回 ErrDuplicateName。
+func (s *Store) UpdateUnit(ctx context.Context, id int64, name string, sortOrder int, isPublic bool) (Unit, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Unit{}, errors.New("单位名称不能为空")
 	}
+	isP := 0
+	if isPublic {
+		isP = 1
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE units SET name = ?, sort_order = ? WHERE id = ?`, name, sortOrder, id)
+		`UPDATE units SET name = ?, sort_order = ?, is_public = ? WHERE id = ?`,
+		name, sortOrder, isP, id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Unit{}, ErrDuplicateName

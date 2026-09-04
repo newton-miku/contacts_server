@@ -38,6 +38,9 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // migrate 幂等执行 schema 迁移。
 func (s *Store) migrate(ctx context.Context) error {
+	// schema_version 8：
+	//  - 单位新增「公开单位」标记 is_public：公开单位的联系人对任何登录用户可见
+	//    （手机端 enduser/unit 的“全局可见”，见 internal/store/units.go PublicUnitIDs）。
 	// schema_version 7：
 	//  - 联系人新增「手机2」可选列（mobile2）：同一人可登记第二个手机号
 	//    （源表存在“手机 / 手机”同格多号时也从此不再丢失）。
@@ -54,6 +57,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			name       TEXT NOT NULL UNIQUE,
 			sort_order INTEGER NOT NULL DEFAULT 0,
+			is_public  INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS contacts (
@@ -71,7 +75,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			username            TEXT NOT NULL UNIQUE,
 			password_hash       TEXT NOT NULL,
 			display_name        TEXT,
-			role                TEXT NOT NULL DEFAULT 'unit', -- 'super' 超级管理员 | 'unit' 单位管理员
+			role                TEXT NOT NULL DEFAULT 'unit', -- 'super' 超级管理员 | 'unit' 单位管理员 | 'enduser' 只读手机用户
 			is_active           INTEGER NOT NULL DEFAULT 1,
 			must_change_password INTEGER NOT NULL DEFAULT 0,
 			created_at          TEXT NOT NULL
@@ -166,9 +170,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 
+	// v8：单位「公开单位」标记（is_public=1 → 任何登录用户都可见其联系人，手机 enduser 的“全局可见”）。
+	if err := s.addColumnIfMissing(ctx, "units", "is_public", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
 	// 初始化 meta 键（若缺失）。
 	defaults := map[string]string{
-		"schema_version":  "7",
+		"schema_version":  "8",
 		"data_version":    "0",
 		"data_updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
@@ -178,10 +187,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	// 已跑过的老库 meta 里仍是旧版本号：幂等推进到 v7（defaults 只 INSERT 不会改旧值；
-	// 兼容各历史版本号 4/5/6——旧代码默认值曾停在 4，且递增链并非全覆盖）。
+	// 已跑过的老库 meta 里仍是旧版本号：幂等推进到 v8（defaults 只 INSERT 不会改旧值；
+	// 兼容各历史版本号 4/5/6/7——旧代码默认值曾停在 4，且递增链并非全覆盖）。
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE meta SET value = '7' WHERE key = 'schema_version' AND value IN ('4', '5', '6')`); err != nil {
+		`UPDATE meta SET value = '8' WHERE key = 'schema_version' AND value IN ('4', '5', '6', '7')`); err != nil {
 		return err
 	}
 	return nil

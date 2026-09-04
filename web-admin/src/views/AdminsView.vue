@@ -22,7 +22,8 @@ const form = reactive({
 })
 
 const isSelf = (row) => session.user?.id === row.id
-const roleName = (r) => (r === 'super' ? '超级管理员' : '单位管理员')
+const roleName = (r) => ({ super: '超级管理员', unit: '单位管理员', enduser: '只读用户' })[r] || r
+const roleTag = (r) => ({ super: 'danger', unit: 'warning', enduser: 'success' })[r] || 'info'
 
 async function load() {
   loading.value = true
@@ -63,7 +64,7 @@ function openEdit(row) {
 }
 
 const usernameDisabled = computed(() => editing.value != null)
-const title = computed(() => (editing.value ? `编辑管理员：${editing.value.username}` : '新建管理员'))
+const title = computed(() => (editing.value ? `编辑账号：${editing.value.username}` : '新建账号'))
 
 const rules = {
   username: editing.value
@@ -90,23 +91,18 @@ async function submit() {
   }
   saving.value = true
   try {
+    const payload = {
+      displayName: form.displayName.trim(),
+      role: form.role,
+      isActive: form.isActive,
+      unitIds: form.role === 'super' ? [] : form.unitIds,
+    }
     if (editing.value) {
-      await updateAdminUser(editing.value.id, {
-        displayName: form.displayName.trim(),
-        role: form.role,
-        isActive: form.isActive,
-        unitIds: form.role === 'unit' ? form.unitIds : [],
-      })
-      ElMessage.success('已保存管理员设置')
+      await updateAdminUser(editing.value.id, payload)
+      ElMessage.success('已保存账号设置')
     } else {
-      await createAdminUser({
-        username: form.username.trim(),
-        displayName: form.displayName.trim(),
-        password: form.password,
-        role: form.role,
-        unitIds: form.role === 'unit' ? form.unitIds : [],
-      })
-      ElMessage.success('已创建管理员（首次登录需修改初始密码）')
+      await createAdminUser({ ...payload, username: form.username.trim(), password: form.password })
+      ElMessage.success('已创建账号（首次登录需修改初始密码）')
     }
     dialogVisible.value = false
     await load()
@@ -141,15 +137,14 @@ async function onResetPassword(row) {
   }
 }
 
-const roleTag = (r) => (r === 'super' ? 'danger' : 'warning')
 </script>
 
 <template>
   <div>
     <div class="toolbar">
-      <div class="tip">超级管理员可创建管理员并分配其负责的单位；单位管理员只能看到/修改这些单位的联系人。</div>
+      <div class="tip">超级管理员可创建管理员/只读账号并分配其负责的单位；单位管理员只能看到/修改这些单位的联系人，只读账号仅可在手机端浏览绑定单位与公开单位。</div>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新建管理员</el-button>
+      <el-button type="primary" :icon="Plus" @click="openCreate">新建账号</el-button>
     </div>
 
     <el-table :data="rows" v-loading="loading" border stripe class="table">
@@ -164,7 +159,7 @@ const roleTag = (r) => (r === 'super' ? 'danger' : 'warning')
       </el-table-column>
       <el-table-column label="负责单位" min-width="170">
         <template #default="{ row }">
-          <span v-if="row.role === 'unit'">{{ (row.unitNames || []).join('、') || '（未绑定）' }}</span>
+          <span v-if="row.role !== 'super'">{{ (row.unitNames || []).join('、') || '（未绑定）' }}</span>
           <span v-else class="all">全部</span>
         </template>
       </el-table-column>
@@ -207,10 +202,17 @@ const roleTag = (r) => (r === 'super' ? 'danger' : 'warning')
           <el-radio-group v-model="form.role">
             <el-radio value="super">超级管理员</el-radio>
             <el-radio value="unit">单位管理员</el-radio>
+            <el-radio value="enduser">只读用户</el-radio>
           </el-radio-group>
+          <span v-if="form.role === 'enduser'" class="hint">仅可在手机端登录浏览，不可登录本后台</span>
         </el-form-item>
-        <el-form-item v-if="form.role === 'unit'" label="负责单位" prop="unitIds">
-          <el-select v-model="form.unitIds" multiple placeholder="可多选（至少一个）" style="width: 100%">
+        <el-form-item v-if="form.role === 'unit' || form.role === 'enduser'" label="负责单位" prop="unitIds">
+          <el-select
+            v-model="form.unitIds"
+            multiple
+            :placeholder="form.role === 'unit' ? '可多选（至少一个）' : '可多选（可不选，仅浏览公开单位）'"
+            style="width: 100%"
+          >
             <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
           </el-select>
         </el-form-item>

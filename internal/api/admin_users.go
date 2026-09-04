@@ -48,12 +48,18 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "初始密码至少 6 位")
 		return
 	}
-	if in.Role != store.RoleSuper && in.Role != store.RoleUnit {
-		writeErr(w, http.StatusBadRequest, "角色只能是 super 或 unit")
-		return
-	}
-	if in.Role == store.RoleUnit && len(in.UnitIDs) == 0 {
-		writeErr(w, http.StatusBadRequest, "单位管理员至少需绑定一个单位")
+	switch in.Role {
+	case store.RoleSuper:
+		// 超管：不绑单位。
+	case store.RoleUnit:
+		if len(in.UnitIDs) == 0 {
+			writeErr(w, http.StatusBadRequest, "单位管理员至少需绑定一个单位")
+			return
+		}
+	case store.RoleEndUser:
+		// 只读用户（手机端）：可绑 0..N 个单位，0 个单位时也能看公开单位。
+	default:
+		writeErr(w, http.StatusBadRequest, "角色只能是 super、unit 或 enduser")
 		return
 	}
 	// 校验所有 unit id 均存在（超管可任意指派）。
@@ -87,7 +93,7 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "创建账号失败")
 		return
 	}
-	if in.Role == store.RoleUnit {
+	if in.Role == store.RoleUnit || in.Role == store.RoleEndUser {
 		if err := s.store.SetUserUnits(r.Context(), u.ID, in.UnitIDs); err != nil {
 			writeErr(w, http.StatusInternalServerError, "绑定单位失败")
 			return
@@ -98,7 +104,7 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.logAudit(r, store.LogCategoryAccount, "create_user", "新建管理员 "+in.Username+"（角色 "+roleLabel(in.Role)+"）")
+	s.logAudit(r, store.LogCategoryAccount, "create_user", "新建账号 "+in.Username+"（角色 "+roleLabel(in.Role)+"）")
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -134,12 +140,18 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取账号失败")
 		return
 	}
-	if in.Role != store.RoleSuper && in.Role != store.RoleUnit {
-		writeErr(w, http.StatusBadRequest, "角色只能是 super 或 unit")
-		return
-	}
-	if in.Role == store.RoleUnit && len(in.UnitIDs) == 0 {
-		writeErr(w, http.StatusBadRequest, "单位管理员至少需绑定一个单位")
+	switch in.Role {
+	case store.RoleSuper:
+		// 超管：不绑单位。
+	case store.RoleUnit:
+		if len(in.UnitIDs) == 0 {
+			writeErr(w, http.StatusBadRequest, "单位管理员至少需绑定一个单位")
+			return
+		}
+	case store.RoleEndUser:
+		// 只读用户（手机端）：可绑 0..N 个单位，0 个单位时也能看公开单位。
+	default:
+		writeErr(w, http.StatusBadRequest, "角色只能是 super、unit 或 enduser")
 		return
 	}
 	for _, uid := range in.UnitIDs {
@@ -168,6 +180,10 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// super 不保留单位绑定；unit/enduser 按 payload 整表替换绑定（enduser 可为 0..N）。
+	if in.Role == store.RoleSuper {
+		in.UnitIDs = nil
+	}
 	if err := s.store.UpdateUserProfile(r.Context(), id, in.DisplayName, in.Role, in.IsActive, in.UnitIDs); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "账号不存在")
@@ -186,7 +202,7 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logAudit(r, store.LogCategoryAccount, "update_user",
-		"修改管理员 "+u.Username+"（角色 "+roleLabel(u.Role)+"，启用 "+boolText(u.IsActive)+"）")
+		"修改账号 "+u.Username+"（角色 "+roleLabel(u.Role)+"，启用 "+boolText(u.IsActive)+"）")
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -254,10 +270,14 @@ func (s *Server) otherActiveSuperExists(ctx context.Context, excludeID int64) (b
 }
 
 func roleLabel(role string) string {
-	if role == store.RoleSuper {
+	switch role {
+	case store.RoleSuper:
 		return "超级管理员"
+	case store.RoleEndUser:
+		return "只读用户"
+	default:
+		return "单位管理员"
 	}
-	return "单位管理员"
 }
 
 func boolText(b bool) string {

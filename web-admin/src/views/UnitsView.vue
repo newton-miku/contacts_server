@@ -10,7 +10,7 @@ const dialogVisible = ref(false)
 const saving = ref(false)
 const editing = ref(null) // null → 新增
 const formRef = ref()
-const form = reactive({ name: '', sortOrder: 0 })
+const form = reactive({ name: '', sortOrder: 0, isPublic: false })
 
 const rules = {
   name: [{ required: true, message: '请输入单位名称', trigger: 'blur' }],
@@ -30,12 +30,12 @@ onMounted(load)
 
 function openCreate() {
   editing.value = null
-  Object.assign(form, { name: '', sortOrder: rows.value.length })
+  Object.assign(form, { name: '', sortOrder: rows.value.length, isPublic: false })
   dialogVisible.value = true
 }
 function openEdit(row) {
   editing.value = row
-  Object.assign(form, { name: row.name, sortOrder: row.sortOrder })
+  Object.assign(form, { name: row.name, sortOrder: row.sortOrder, isPublic: !!row.isPublic })
   dialogVisible.value = true
 }
 
@@ -44,11 +44,12 @@ async function submit() {
   if (!valid) return
   saving.value = true
   try {
+    const payload = { name: form.name.trim(), sortOrder: form.sortOrder, isPublic: form.isPublic }
     if (editing.value) {
-      await updateUnit(editing.value.id, { name: form.name.trim(), sortOrder: form.sortOrder })
+      await updateUnit(editing.value.id, payload)
       ElMessage.success('已更新单位')
     } else {
-      await createUnit({ name: form.name.trim(), sortOrder: form.sortOrder })
+      await createUnit(payload)
       ElMessage.success('已新建单位')
     }
     dialogVisible.value = false
@@ -57,6 +58,20 @@ async function submit() {
     ElMessage.error(e.message)
   } finally {
     saving.value = false
+  }
+}
+
+// onTogglePublic 行内快速切换「公开单位」。此操作会让全体登录用户（含手机只读账号）看到该单位联系人，
+// 但单位管理员/只读用户在网页端无法更改，仅超管可切。
+async function onTogglePublic(row, val) {
+  const prev = row.isPublic
+  row.isPublic = !!val
+  try {
+    await updateUnit(row.id, { name: row.name, sortOrder: row.sortOrder, isPublic: !!val })
+    ElMessage.success(val ? '已设为公开单位，全体登录用户（含手机端只读账号）可见' : '已取消公开')
+  } catch (e) {
+    row.isPublic = prev
+    ElMessage.error(e.message)
   }
 }
 
@@ -92,6 +107,11 @@ async function onRemove(row) {
       <el-table-column prop="name" label="单位名称" min-width="200" />
       <el-table-column prop="sortOrder" label="排序" width="100" align="center" />
       <el-table-column prop="count" label="联系人" width="100" align="center" />
+      <el-table-column label="公开单位" width="120" align="center">
+        <template #default="{ row }">
+          <el-switch :model-value="!!row.isPublic" @change="(v) => onTogglePublic(row, v)" />
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="140" align="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -116,6 +136,10 @@ async function onRemove(row) {
         <el-form-item label="排序" prop="sortOrder">
           <el-input-number v-model="form.sortOrder" :min="0" :max="9999" controls-position="right" />
           <span class="order-hint">数字越小越靠前</span>
+        </el-form-item>
+        <el-form-item label="公开单位" prop="isPublic">
+          <el-switch v-model="form.isPublic" />
+          <span class="order-hint">开启后该单位联系人对全体登录用户（含手机只读账号）可见</span>
         </el-form-item>
       </el-form>
       <template #footer>

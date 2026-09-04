@@ -18,7 +18,7 @@ const userName = computed(() => {
 const mustChange = computed(() => session.user?.mustChangePassword === true)
 const isSuper = computed(() => session.user?.role === 'super')
 const roleText = computed(() =>
-  isSuper.value ? '超级管理员' : session.user?.role === 'unit' ? '单位管理员' : '',
+  ({ super: '超级管理员', unit: '单位管理员', enduser: '只读用户（仅手机端）' })[session.user?.role] ?? '',
 )
 
 async function logout() {

@@ -21,6 +21,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Client   string `json:"client"` // 'web'（默认，Cookie 会话）| 'app'（手机端，返回 Bearer token）
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -28,6 +29,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	in.Username = strings.TrimSpace(in.Username)
 	if in.Username == "" || in.Password == "" {
 		writeErr(w, http.StatusBadRequest, "请输入用户名和密码")
+		return
+	}
+	client := in.Client
+	if client == "" {
+		client = "web"
+	}
+	if client != "web" && client != "app" {
+		writeErr(w, http.StatusBadRequest, "client 只能为 web 或 app")
 		return
 	}
 
@@ -53,6 +62,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.guard.clear(key)
 
+	// 只读账号（enduser）仅允许手机端（client=app）登录，网页后台一律拒绝。
+	if u.Role == store.RoleEndUser && client != "app" {
+		_ = s.store.AppendLog(r.Context(), u.ID, u.Username,
+			store.LogCategoryAuth, "login_blocked", "只读账号尝试网页登录被拒", clientIP(r))
+		writeErr(w, http.StatusForbidden, "该账号仅限手机端登录")
+		return
+	}
+
 	// 签发会话
 	token, err := s.auth.NewToken()
 	if err != nil {
@@ -67,20 +84,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expireT, _ := time.Parse(time.RFC3339, expiresAt)
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.sessionName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  expireT,
-		MaxAge:   int(time.Until(expireT).Seconds()),
-	})
+	// 仅网页端（client=web）种 Cookie 会话；App 端只返回 Bearer token，不种 Cookie——
+	// 这样服务端能可靠区分“网页 unit 只管绑定单位”与“手机端 unit/enduser 可见=绑定∪公开”。
+	// （见 server.go authChannel / accessUnitIDs。）
+	if client != "app" {
+		expireT, _ := time.Parse(time.RFC3339, expiresAt)
+		http.SetCookie(w, &http.Cookie{
+			Name:     s.sessionName,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  expireT,
+			MaxAge:   int(time.Until(expireT).Seconds()),
+		})
+	}
 
-	// 登录成功日志（含 IP）。
+	// 登录成功日志（含来源端）。
 	_ = s.store.AppendLog(r.Context(), u.ID, u.Username,
-		store.LogCategoryAuth, "login", "登录成功", clientIP(r))
+		store.LogCategoryAuth, "login", "登录成功（"+client+" 端）", clientIP(r))
 
 	payload, err := s.userPayload(r, u)
 	if err != nil {
@@ -105,7 +127,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
-// userPayload 返回对前端可见的用户信息；单位管理员额外带出其绑定单位。
+// userPayload 返回对前端可见的用户信息；unit/enduser 额外带出其绑定单位
+// （手机端据此提示可见范围；绑定单位 ∪ 公开单位）。
 func (s *Server) userPayload(r *http.Request, u store.User) (map[string]any, error) {
 	m := map[string]any{
 		"id":                 u.ID,
@@ -114,7 +137,7 @@ func (s *Server) userPayload(r *http.Request, u store.User) (map[string]any, err
 		"role":               u.Role,
 		"mustChangePassword": u.MustChangePassword,
 	}
-	if u.Role == store.RoleUnit {
+	if u.Role == store.RoleUnit || u.Role == store.RoleEndUser {
 		units, err := s.store.UserUnits(r.Context(), u.ID)
 		if err != nil {
 			return nil, err

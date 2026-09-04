@@ -10,10 +10,12 @@ import (
 )
 
 // unitPayload 单位列表项：带联系人计数（在调用者数据范围内统计）。
+// IsPublic（公开单位）仅 super 可编辑；unit 列表里为其绑定单位，字段恒为 false。
 type unitPayload struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	SortOrder int    `json:"sortOrder"`
+	IsPublic  bool   `json:"isPublic"`
 	Count     int    `json:"count"`
 }
 
@@ -52,7 +54,7 @@ func (s *Server) handleListUnits(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]unitPayload, 0, len(units))
 	for _, un := range units {
-		out = append(out, unitPayload{ID: un.ID, Name: un.Name, SortOrder: un.SortOrder, Count: counts[un.ID]})
+		out = append(out, unitPayload{ID: un.ID, Name: un.Name, SortOrder: un.SortOrder, IsPublic: un.IsPublic, Count: counts[un.ID]})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -62,6 +64,7 @@ func (s *Server) handleCreateUnit(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name      string `json:"name"`
 		SortOrder int    `json:"sortOrder"`
+		IsPublic  bool   `json:"isPublic"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -70,7 +73,7 @@ func (s *Server) handleCreateUnit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	u, err := s.store.CreateUnit(r.Context(), in.Name, in.SortOrder)
+	u, err := s.store.CreateUnit(r.Context(), in.Name, in.SortOrder, in.IsPublic)
 	if err != nil {
 		if errors.Is(err, store.ErrDuplicateName) {
 			writeErr(w, http.StatusBadRequest, "单位名称已存在")
@@ -83,7 +86,7 @@ func (s *Server) handleCreateUnit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, u)
 }
 
-// handleUpdateUnit 修改单位名称/排序（super）。
+// handleUpdateUnit 修改单位名称/排序/公开标记（super）。
 func (s *Server) handleUpdateUnit(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -93,6 +96,7 @@ func (s *Server) handleUpdateUnit(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name      string `json:"name"`
 		SortOrder int    `json:"sortOrder"`
+		IsPublic  bool   `json:"isPublic"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -101,7 +105,7 @@ func (s *Server) handleUpdateUnit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	u, err := s.store.UpdateUnit(r.Context(), id, in.Name, in.SortOrder)
+	u, err := s.store.UpdateUnit(r.Context(), id, in.Name, in.SortOrder, in.IsPublic)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "单位不存在")
