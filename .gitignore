@@ -1,0 +1,25 @@
+# ===== 运行时数据 / 日志（不入库）=====
+phonebook.db
+phonebook.db-shm
+phonebook.db-wal
+*.db.bak
+server.log
+
+# ===== 本地编译产物 =====
+phonebook-server.exe
+phonebook-server
+
+# ===== 前端构建产物 =====
+# 管理页源码在 web-admin/；构建产物 web/ 是 go:embed 需要的内容，
+# 克隆后先 cd web-admin && npm install && npm run build 再生（输出到 ../web）。
+web/
+web-admin/node_modules/
+web-admin/dist/
+web-admin/.vite/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

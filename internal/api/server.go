@@ -1,0 +1,381 @@
+package api
+
+import (
+	"compress/gzip"
+	"context"
+	"io/fs"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"phonebook-server/internal/auth"
+	"phonebook-server/internal/store"
+)
+
+// loginGuard 简易内存防爆破（按 用户名+IP）。
+type loginGuard struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+}
+
+func newLoginGuard() *loginGuard {
+	return &loginGuard{attempts: make(map[string][]time.Time)}
+}
+
+func (g *loginGuard) tooMany(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-loginWindow)
+	list := g.attempts[key]
+	kept := list[:0]
+	for _, t := range list {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	g.attempts[key] = kept
+	return len(kept) >= loginMaxFails
+}
+
+func (g *loginGuard) recordFailure(key string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.attempts[key] = append(g.attempts[key], time.Now())
+}
+
+func (g *loginGuard) clear(key string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.attempts, key)
+}
+
+// Server 持有依赖并提供全部 HTTP 处理器。
+type Server struct {
+	store *store.Store
+	auth  *auth.Manager
+	guard *loginGuard
+	// WebFS 提供管理页静态资源；nil 时跳过静态服务。
+	WebFS fs.FS
+	// session cookie 名。
+	sessionName string
+}
+
+// NewServer 组装服务。static 为 nil 时只提供 API。
+func NewServer(st *store.Store, static fs.FS) *Server {
+	return &Server{
+		store:       st,
+		auth:        auth.New(),
+		guard:       newLoginGuard(),
+		WebFS:       static,
+		sessionName: "pb_session",
+	}
+}
+
+// Handler 返回完整路由（含中间件）。
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	// ---- 公开读（客户端匿名全量；登录后按角色过滤）----
+	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/version", s.handleGetVersion)
+	mux.HandleFunc("GET /api/contacts", s.handleListContacts)
+
+	// ---- 身份 ----
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.withAuth(s.handleLogout))
+	mux.HandleFunc("GET /api/auth/me", s.withAuth(s.handleMe))
+	mux.HandleFunc("POST /api/auth/password", s.withAuth(s.handleChangePassword))
+
+	// ---- 单位（读：任一管理员；写：仅 super）----
+	mux.HandleFunc("GET /api/units", s.withAuth(s.handleListUnits))
+	mux.HandleFunc("POST /api/units", s.withSuper(s.handleCreateUnit))
+	mux.HandleFunc("PUT /api/units/{id}", s.withSuper(s.handleUpdateUnit))
+	mux.HandleFunc("DELETE /api/units/{id}", s.withSuper(s.handleDeleteUnit))
+
+	// ---- 联系人写/导入导出（super 或 unit，须已过强制改密）----
+	mux.HandleFunc("POST /api/contacts", s.withStaff(s.handleCreateContact))
+	mux.HandleFunc("PUT /api/contacts/{id}", s.withStaff(s.handleUpdateContact))
+	mux.HandleFunc("DELETE /api/contacts/{id}", s.withStaff(s.handleDeleteContact))
+	mux.HandleFunc("GET /api/contacts/export", s.withStaff(s.handleExportContacts))
+	mux.HandleFunc("POST /api/contacts/import", s.withStaff(s.handleImportContacts))
+	mux.HandleFunc("GET /api/duplicates", s.withStaff(s.handleDuplicates))
+
+	// ---- 管理员账号管理（仅 super）----
+	mux.HandleFunc("GET /api/admin/users", s.withSuper(s.handleListAdminUsers))
+	mux.HandleFunc("POST /api/admin/users", s.withSuper(s.handleCreateAdminUser))
+	mux.HandleFunc("PUT /api/admin/users/{id}", s.withSuper(s.handleUpdateAdminUser))
+	mux.HandleFunc("POST /api/admin/users/{id}/reset-password", s.withSuper(s.handleResetAdminPassword))
+
+	// ---- 目录数据运维（仅 super）：清空旧数据后整本导入 ----
+	mux.HandleFunc("POST /api/admin/clear-directory", s.withSuper(s.handleClearDirectory))
+
+	// ---- 系统日志（仅 super）----
+	mux.HandleFunc("GET /api/logs", s.withSuper(s.handleQueryLogs))
+
+	// ---- 管理页静态资源 ----
+	if s.WebFS != nil {
+		fileServer := http.FileServer(http.FS(s.WebFS))
+		mux.Handle("GET /", fileServer)
+	}
+
+	var h http.Handler = mux
+	h = s.gzip(h)
+	h = s.cors(h)
+	h = s.logRequests(h)
+	h = s.recoverPanic(h)
+	return h
+}
+
+// ---- 中间件 ----
+
+func (s *Server) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		log.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, sw.status, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+func (s *Server) recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic serving %s: %v", r.URL.Path, rec)
+				writeErr(w, http.StatusInternalServerError, "服务器内部错误")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// cors 允许跨域（便于 Flutter web 调试），并处理预检请求。
+func (s *Server) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Max-Age", "600")
+		}
+
+		if r.Method == http.MethodOptions {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			// 非 API 的 OPTIONS 直接放行给后续处理。
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// gzip 对声明支持 gzip 的客户端压缩响应（JSON、前端静态资源），显著减小传输字节。
+func (s *Server) gzip(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz := gzip.NewWriter(w)
+		gw := &gzipResponseWriter{ResponseWriter: w, gz: gz}
+		defer func() {
+			if gw.started && gw.compress {
+				_ = gz.Close()
+			}
+		}()
+		next.ServeHTTP(gw, r)
+	})
+}
+
+// gzipResponseWriter 懒初始化 gzip：在首个 WriteHeader/Write 时决定是否压缩。
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz       *gzip.Writer
+	started  bool
+	compress bool
+}
+
+// 已压缩过的内容类型不再套一层 gzip（无收益还费 CPU）。
+var noGzipTypes = []string{"image/", "font/", "video/", "audio/", "application/octet-stream"}
+
+func (g *gzipResponseWriter) start(code int) {
+	g.started = true
+	ct := g.Header().Get("Content-Type")
+	g.compress = true
+	for _, p := range noGzipTypes {
+		if strings.HasPrefix(ct, p) {
+			g.compress = false
+			break
+		}
+	}
+	if g.compress {
+		g.Header().Del("Content-Length")
+		g.Header().Set("Content-Encoding", "gzip")
+		g.Header().Add("Vary", "Accept-Encoding")
+	}
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	if !g.started {
+		g.start(code)
+	} else {
+		g.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !g.started {
+		g.start(http.StatusOK)
+	}
+	if !g.compress {
+		return g.ResponseWriter.Write(b)
+	}
+	return g.gz.Write(b)
+}
+
+// ---- 认证辅助 ----
+
+type ctxKey int
+
+const userKey ctxKey = 0
+
+// resolveToken 从 Cookie 或 Authorization: Bearer 头取原始令牌。
+func (s *Server) resolveToken(r *http.Request) string {
+	if c, err := r.Cookie(s.sessionName); err == nil && c.Value != "" {
+		return c.Value
+	}
+	ah := r.Header.Get("Authorization")
+	if len(ah) > 7 && strings.EqualFold(ah[:7], "Bearer ") {
+		return strings.TrimSpace(ah[7:])
+	}
+	return ""
+}
+
+// withAuth 要求有效会话；通过后把 user 放进 context。
+func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, u)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// roleOK 判断该角色能否执行管理操作。
+func roleOK(role string) bool { return role == store.RoleSuper || role == store.RoleUnit }
+
+// withStaff 要求 super 或 unit 登录，并强制“首次登录改密”：
+// 账号仍在用初始/重置密码（must_change_password=1）时，除改密外的管理操作一律拒绝。
+func (s *Server) withStaff(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if !roleOK(u.Role) {
+			writeErr(w, http.StatusForbidden, "无权限执行该操作")
+			return
+		}
+		if u.MustChangePassword {
+			writeErr(w, http.StatusForbidden, "请先修改初始密码，再执行该操作")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, u)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// withSuper 在 withAuth 基础上要求 super，并强制“首次登录改密”。
+func (s *Server) withSuper(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if u.Role != store.RoleSuper {
+			writeErr(w, http.StatusForbidden, "需要超级管理员权限")
+			return
+		}
+		if u.MustChangePassword {
+			writeErr(w, http.StatusForbidden, "请先修改初始密码，再执行该操作")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, u)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+func (s *Server) authenticate(r *http.Request) (store.User, error) {
+	raw := s.resolveToken(r)
+	if raw == "" {
+		return store.User{}, auth.ErrUnauthorized
+	}
+	return s.store.UserForSession(r.Context(), auth.TokenHash(raw))
+}
+
+// userFrom 从 context 取当前用户。
+func userFrom(r *http.Request) store.User {
+	u, _ := r.Context().Value(userKey).(store.User)
+	return u
+}
+
+// staffUnitIDs 返回当前管理用户的数据范围：super/匿名 → nil（全部）；
+// unit → 绑定单位 id 列表（没有绑定则为空切片，即“一条也看不到”）。
+func (s *Server) staffUnitIDs(r *http.Request) ([]int64, error) {
+	u := userFrom(r)
+	if u.ID == 0 || u.Role == store.RoleSuper {
+		return nil, nil
+	}
+	return s.store.UserUnitIDs(r.Context(), u.ID)
+}
+
+// managesUnit 判断当前登录管理员是否被允许管理该单位（super 恒 true）。
+func (s *Server) managesUnit(r *http.Request, unitID int64) (bool, error) {
+	u := userFrom(r)
+	if u.ID == 0 || u.Role == store.RoleSuper {
+		return true, nil
+	}
+	units, err := s.store.UserUnits(r.Context(), u.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, un := range units {
+		if un.ID == unitID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// logAudit 记一条审计日志（当前登录用户 + 请求来源 IP）。
+func (s *Server) logAudit(r *http.Request, category, action, detail string) {
+	u := userFrom(r)
+	_ = s.store.AppendLog(r.Context(), u.ID, u.Username, category, action, detail, clientIP(r))
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
