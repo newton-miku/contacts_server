@@ -75,6 +75,32 @@ func (s *Store) PublicUnitIDs(ctx context.Context) ([]int64, error) {
 	return ids, rows.Err()
 }
 
+// SetUnitsPublic 批量设置若干单位的公开标记（super 在单位管理页“全选→设公开/取消公开”用）。
+// 返回实际受影响行数；ids 为空时直接返回 0。
+func (s *Store) SetUnitsPublic(ctx context.Context, ids []int64, public bool) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	pub := 0
+	if public {
+		pub = 1
+	}
+	phs := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, pub)
+	for _, id := range ids {
+		phs = append(phs, "?")
+		args = append(args, id)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE units SET is_public = ? WHERE id IN (`+strings.Join(phs, ", ")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // UnitExists 判断单位是否存在（写联系人前校验用）。
 func (s *Store) UnitExists(ctx context.Context, id int64) (bool, error) {
 	if id <= 0 {
@@ -138,7 +164,8 @@ func (s *Store) CreateUnit(ctx context.Context, name string, sortOrder int, isPu
 // EnsureUnits 为批量导入解析单位：返回「名称→id」映射，CSV 里出现但尚不存在的单位
 // （名称 trim 后非空）会在同一事务内自动创建，排序排在现有单位之后。返回值 created 是
 // 本批新建的单位（按首现顺序），供出错时回滚删除/记日志。新建空单位不递增 data_version
-// （不改变任何联系人数据，客户端无需重拉）。
+// （不改变任何联系人数据，客户端无需重拉）。**导入时自动创建的单位默认设为公开单位
+// （is_public=1）**——即「导入的单位默认全公开」，这样手机只读/普通账号可见整本目录。
 func (s *Store) EnsureUnits(ctx context.Context, names []string) (byName map[string]int64, created []Unit, err error) {
 	byName = make(map[string]int64)
 	want := make([]string, 0, len(names))
@@ -178,7 +205,7 @@ func (s *Store) EnsureUnits(ctx context.Context, names []string) (byName map[str
 		}
 		maxSort++
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO units(name, sort_order, created_at) VALUES(?, ?, ?)`,
+			`INSERT INTO units(name, sort_order, is_public, created_at) VALUES(?, ?, 1, ?)`,
 			name, maxSort, now)
 		if err != nil {
 			if isUniqueViolation(err) {
@@ -195,7 +222,7 @@ func (s *Store) EnsureUnits(ctx context.Context, names []string) (byName map[str
 			return nil, nil, err
 		}
 		byName[name] = id
-		created = append(created, Unit{ID: id, Name: name, SortOrder: maxSort, CreatedAt: now})
+		created = append(created, Unit{ID: id, Name: name, SortOrder: maxSort, IsPublic: true, CreatedAt: now})
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err

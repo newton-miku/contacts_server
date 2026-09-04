@@ -37,6 +37,7 @@ export const listUnits = () => api('GET', '/api/units')
 export const createUnit = (payload) => api('POST', '/api/units', payload)
 export const updateUnit = (id, payload) => api('PUT', `/api/units/${id}`, payload)
 export const deleteUnit = (id) => api('DELETE', `/api/units/${id}`)
+export const bulkSetUnitsPublic = (unitIds, isPublic) => api('POST', '/api/units/bulk-public', { unitIds, public: isPublic })
 
 // ---- 管理员账号管理（仅 super）----
 export const listAdminUsers = () => api('GET', '/api/admin/users')

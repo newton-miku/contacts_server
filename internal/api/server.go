@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- 单位（读：任一管理员；写：仅 super）----
 	mux.HandleFunc("GET /api/units", s.withAuth(s.handleListUnits))
 	mux.HandleFunc("POST /api/units", s.withSuper(s.handleCreateUnit))
+	mux.HandleFunc("POST /api/units/bulk-public", s.withSuper(s.handleBulkPublic))
 	mux.HandleFunc("PUT /api/units/{id}", s.withSuper(s.handleUpdateUnit))
 	mux.HandleFunc("DELETE /api/units/{id}", s.withSuper(s.handleDeleteUnit))
 

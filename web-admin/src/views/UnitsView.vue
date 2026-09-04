@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
-import { createUnit, deleteUnit, listUnits, updateUnit } from '../api'
+import { bulkSetUnitsPublic, createUnit, deleteUnit, listUnits, updateUnit } from '../api'
 
 const rows = ref([])
 const loading = ref(false)
@@ -10,6 +10,8 @@ const dialogVisible = ref(false)
 const saving = ref(false)
 const editing = ref(null) // null → 新增
 const formRef = ref()
+const tableRef = ref()
+const selection = ref([])
 const form = reactive({ name: '', sortOrder: 0, isPublic: false })
 
 const rules = {
@@ -75,6 +77,33 @@ async function onTogglePublic(row, val) {
   }
 }
 
+// applyPublic 批量设置勾选单位的公开标记（表头勾选框 = 全选当前全部单位），“最后保存”。
+async function applyPublic(isPublic) {
+  const sel = selection.value
+  if (!sel.length) {
+    ElMessage.warning('请先勾选要设置的单位（表头复选框可全选）')
+    return
+  }
+  const label = isPublic ? '设为公开' : '取消公开'
+  try {
+    await ElMessageBox.confirm(
+      `将选中的 ${sel.length} 个单位${isPublic ? '设为公开单位（全体登录用户可见）' : '取消公开'}，确定保存？`,
+      `批量${label}`,
+      { type: 'warning', confirmButtonText: '保存', cancelButtonText: '取消' },
+    )
+  } catch (_) {
+    return
+  }
+  try {
+    const { count } = await bulkSetUnitsPublic(sel.map((x) => x.id), isPublic)
+    ElMessage.success(`已${label} ${count} 个单位`)
+    tableRef.value?.clearSelection()
+    await load()
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
 async function onRemove(row) {
   try {
     await ElMessageBox.confirm(
@@ -98,12 +127,19 @@ async function onRemove(row) {
 <template>
   <div>
     <div class="toolbar">
-      <div class="tip">联系人的「单位」取自这里的预定义列表；改动单位名不影响既有联系人。</div>
+      <div class="tip">
+        联系人「单位」取自这里；CSV 导入自动创建的单位默认「公开单位」。勾选后可批量设公开/取消公开（表头复选框全选）。
+      </div>
+      <template v-if="selection.length">
+        <el-button type="success" @click="applyPublic(true)">设为公开（{{ selection.length }}）</el-button>
+        <el-button type="info" @click="applyPublic(false)">取消公开（{{ selection.length }}）</el-button>
+      </template>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建单位</el-button>
     </div>
 
-    <el-table :data="rows" v-loading="loading" border stripe class="table">
+    <el-table ref="tableRef" :data="rows" v-loading="loading" border stripe class="table" @selection-change="(sel) => (selection = sel)">
+      <el-table-column type="selection" width="46" align="center" />
       <el-table-column prop="name" label="单位名称" min-width="200" />
       <el-table-column prop="sortOrder" label="排序" width="100" align="center" />
       <el-table-column prop="count" label="联系人" width="100" align="center" />

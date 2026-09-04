@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -152,6 +153,56 @@ func (s *Server) handleDeleteUnit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logAudit(r, store.LogCategoryUnit, "delete", "删除单位 "+existing.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+// handleBulkPublic 批量设单位公开/取消公开（super）。单位管理页支持多选（可全选）后一次“保存”。
+// 配合“导入的单位默认全公开”：整本导入后所有单位已公开，如要调整可全选批量取消/改回。
+func (s *Server) handleBulkPublic(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		UnitIDs []int64 `json:"unitIds"`
+		Public  bool    `json:"public"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		return
+	}
+	if len(in.UnitIDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "请至少选择一个单位")
+		return
+	}
+	seen := make(map[int64]bool, len(in.UnitIDs))
+	ids := make([]int64, 0, len(in.UnitIDs))
+	for _, id := range in.UnitIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ok, err := s.store.UnitExists(r.Context(), id)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "校验单位失败")
+			return
+		}
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "存在无效的单位 id")
+			return
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		writeErr(w, http.StatusBadRequest, "请至少选择一个有效的单位")
+		return
+	}
+	n, err := s.store.SetUnitsPublic(r.Context(), ids, in.Public)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "批量设置失败")
+		return
+	}
+	flag := "公开"
+	if !in.Public {
+		flag = "取消公开"
+	}
+	s.logAudit(r, store.LogCategoryUnit, "bulk_public",
+		fmt.Sprintf("批量%s %d 个单位", flag, n))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": n, "public": in.Public})
 }
 
 // validateUnitName 单位名校验（create/update 共用）。
