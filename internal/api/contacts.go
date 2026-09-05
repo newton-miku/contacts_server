@@ -27,7 +27,7 @@ func (s *Server) currentVersion(w http.ResponseWriter, r *http.Request) (int64, 
 
 // handleGetVersion 返回极小的版本信息，客户端据此判断是否需要拉全量：
 // version/updatedAt 是「数据版本」（每次写 +1，客户端缓存同步用）；
-// appVersion/schemaVersion 是运行版本与库结构版本（管理页展示/运维排查用）。
+// appVersion/buildTime/schemaVersion 是运行版本、构建时刻与库结构版本（管理页展示/运维排查用）。
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	v, ts, ok := s.currentVersion(w, r)
 	if !ok {
@@ -42,6 +42,7 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		"version":       v,
 		"updatedAt":     ts,
 		"appVersion":    BuildVersion,
+		"buildTime":     BuildTime,
 		"schemaVersion": sv,
 	})
 }

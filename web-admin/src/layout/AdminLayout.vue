@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataBoard, Phone, Lock, SwitchButton, User, OfficeBuilding, Avatar, Tickets, Search } from '@element-plus/icons-vue'
+import { DataBoard, Phone, Lock, SwitchButton, User, OfficeBuilding, Avatar, Tickets, Search, InfoFilled } from '@element-plus/icons-vue'
 import { session, signOut } from '../stores/session'
 import { pb, loadPhonebook } from '../stores/phonebook'
 import { fmtTime, getVersion } from '../api'
@@ -9,12 +9,14 @@ import { fmtTime, getVersion } from '../api'
 const route = useRoute()
 const router = useRouter()
 
-// 程序/发布版本（GET /api/version 的 appVersion，构建期 -ldflags 注入）。
+// 程序/发布版本与构建时间（GET /api/version，构建期 -ldflags 注入）。
 // 与「数据版本」（meta.data_version，每次写 +1，客户端缓存同步用）是两个概念：
-// 顶栏主文案显示程序版本，悬停提示展示 数据版本/结构版本/更新时间。
-const appMeta = ref({ appVersion: 'dev', version: 0, updatedAt: '', schemaVersion: 0 })
+// 顶栏主文案显示程序版本，悬停提示展示 数据版本/结构版本/构建时间/更新时间；页脚常驻同批信息。
+const appMeta = ref({ appVersion: 'dev', buildTime: '', version: 0, updatedAt: '', schemaVersion: 0 })
 const versionTitle = computed(
-  () => `数据版本 ${appMeta.value.version} · 结构 v${appMeta.value.schemaVersion} · 更新于 ${fmtTime(appMeta.value.updatedAt)}`,
+  () =>
+    `版本 ${appMeta.value.appVersion || 'dev'} · 构建 ${fmtTime(appMeta.value.buildTime)}\n` +
+    `数据版本 ${appMeta.value.version} · 结构 v${appMeta.value.schemaVersion} · 更新于 ${fmtTime(appMeta.value.updatedAt)}`,
 )
 const userName = computed(() => {
   const u = session.user
@@ -43,6 +45,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <div class="app">
   <el-container class="layout">
     <!-- 侧边栏 -->
     <el-aside width="200px" class="aside">
@@ -82,6 +85,10 @@ onMounted(() => {
           <span>修改密码</span>
           <el-badge v-if="mustChange" value="!" class="menu-badge" />
         </el-menu-item>
+        <el-menu-item index="/about">
+          <el-icon><InfoFilled /></el-icon>
+          <span>关于</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -113,10 +120,20 @@ onMounted(() => {
       </el-main>
     </el-container>
   </el-container>
+
+  <!-- 页脚：常驻显示 版本号 + 构建时间（各角色、各页面始终可见） -->
+  <footer class="app-footer">
+    <div class="f-inner">
+      <span class="f-left">石泉县通讯录管理系统 · 版本 {{ appMeta.appVersion || 'dev' }} · 构建 {{ fmtTime(appMeta.buildTime) }}</span>
+      <span class="f-right">数据版本 {{ appMeta.version }} · 结构 v{{ appMeta.schemaVersion }} · 更新于 {{ fmtTime(appMeta.updatedAt) }}</span>
+    </div>
+  </footer>
+  </div>
 </template>
 
 <style scoped>
-.layout { height: 100vh; }
+.app { height: 100vh; display: flex; flex-direction: column; }
+.layout { flex: 1; min-height: 0; }
 .aside {
   background: #0f172a;
   color: #cbd5e1;
@@ -161,4 +178,23 @@ onMounted(() => {
 .actions { display: flex; align-items: center; gap: 10px; }
 .who { display: inline-flex; align-items: center; gap: 4px; color: #475569; font-size: 13px; }
 .main { background: #f1f5f9; overflow: auto; }
+.app-footer {
+  flex-shrink: 0;
+  height: 34px;
+  background: #0f172a;
+  color: #94a3b8;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+}
+.app-footer .f-inner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+  min-width: 0;
+}
+.app-footer .f-right { text-align: right; }
 </style>

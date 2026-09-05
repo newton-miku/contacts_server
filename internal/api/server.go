@@ -54,11 +54,17 @@ func (g *loginGuard) clear(key string) {
 
 // BuildVersion 是发布版本标识，构建期经 -ldflags 注入：
 //
-//	go build -ldflags "-X phonebook-server/internal/api.BuildVersion=$(git rev-parse --short HEAD)-$(date +%Y%m%d%H%M)" .
+//	go build -ldflags "-X phonebook-server/internal/api.BuildVersion=$(git rev-parse --short HEAD)" .
 //
 // 未注入时为 "dev"（对应本地 go run）。经 GET /api/version 的 appVersion 字段暴露，
 // 管理页顶栏展示（与 meta.data_version「数据版本」区分：那是每次写 +1 的缓存同步号）。
 var BuildVersion = "dev"
+
+// BuildTime 是构建时刻（UTC RFC3339），与 BuildVersion 一同在构建期注入（见上）；
+// 未注入为空串，界面按未知展示。示例：
+//
+//	-X phonebook-server/internal/api.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+var BuildTime = ""
 
 // Server 持有依赖并提供全部 HTTP 处理器。
 type Server struct {

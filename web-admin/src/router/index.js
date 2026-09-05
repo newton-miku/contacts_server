@@ -20,6 +20,7 @@ const routes = [
       { path: 'admins', name: 'admins', component: () => import('../views/AdminsView.vue'), meta: { title: '管理员管理', role: 'super' } },
       { path: 'logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { title: '系统日志', role: 'super' } },
       { path: 'password', name: 'password', component: () => import('../views/PasswordView.vue'), meta: { title: '修改密码' } },
+      { path: 'about', name: 'about', component: () => import('../views/AboutView.vue'), meta: { title: '关于' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
