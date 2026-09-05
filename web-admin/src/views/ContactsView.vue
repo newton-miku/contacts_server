@@ -152,7 +152,15 @@ async function onFileChange(ev) {
         clearable
         class="search"
       />
-      <el-select v-model="unitFilter" placeholder="全部单位" clearable class="unit-select">
+      <el-select
+        v-model="unitFilter"
+        placeholder="全部单位"
+        clearable
+        filterable
+        default-first-option
+        no-data-text="没有匹配的单位"
+        class="unit-select"
+      >
         <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
       </el-select>
       <el-button :icon="Refresh" @click="loadPhonebook()">刷新</el-button>
