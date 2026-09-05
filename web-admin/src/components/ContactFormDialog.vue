@@ -145,7 +145,14 @@ async function submit() {
         </el-col>
       </el-row>
       <el-form-item label="单位" prop="unitId">
-        <el-select v-model="form.unitId" placeholder="请选择所属单位" style="width: 100%">
+        <el-select
+          v-model="form.unitId"
+          placeholder="请选择所属单位（可输入名称搜索）"
+          filterable
+          default-first-option
+          no-data-text="没有匹配的单位，可在「单位管理」新建"
+          style="width: 100%"
+        >
           <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
         </el-select>
       </el-form-item>
