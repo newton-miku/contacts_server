@@ -5,6 +5,8 @@ import { fmtTime, getVersion } from '../api'
 import { session } from '../stores/session'
 
 const meta = ref(null) // /api/version 返回：版本/构建时间(程序) + 数据版本/结构(库)
+// 构建时注入的年份（vite.config.js define），打包后固定
+const buildYear = __BUILD_YEAR__
 const loading = ref(false)
 
 async function load() {
@@ -54,6 +56,14 @@ onMounted(load)
         手机客户端据此判断缓存是否需要重拉全量；<b>数据库结构版本</b>由服务端启动迁移维护。
       </div>
     </el-card>
+
+    <el-card shadow="never" class="card">
+      <template #header><b>版权信息</b></template>
+      <div class="credits">
+        <div>Powered by <b>newton_miku</b></div>
+        <div class="muted">© {{ buildYear }} newton_miku. All rights reserved.</div>
+      </div>
+    </el-card>
   </div>
 </template>
 
@@ -62,4 +72,6 @@ onMounted(load)
 .tip { color: #64748b; font-size: 13px; }
 .card { margin-bottom: 12px; }
 .hint { margin-top: 14px; color: #64748b; font-size: 13px; line-height: 1.7; }
+.credits { font-size: 13px; line-height: 1.9; color: #475569; }
+.credits .muted { color: #94a3b8; }
 </style>
