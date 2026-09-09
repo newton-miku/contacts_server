@@ -226,6 +226,59 @@ func (s *Store) ListContactsScoped(ctx context.Context, sc ContactScope) ([]Cont
 	return contacts, rows.Err()
 }
 
+// ListContactsPaged 分页查询联系人（管理页用）：返回当前页数据与总条数。
+// keyword 非空时对 姓名/手机/手机2/座机/传真/职务/邮箱/单位名 做模糊匹配；
+// unitID>0 时只查该单位。scope 为调用者的可见范围。
+func (s *Store) ListContactsPaged(ctx context.Context, sc ContactScope, keyword string, unitID int64, limit, offset int) ([]Contact, int, error) {
+	where, args := contactScopeOf(sc)
+	if where == "" {
+		where = " WHERE 1 = 1"
+	}
+	if unitID > 0 {
+		where += " AND c.unit_id = ?"
+		args = append(args, unitID)
+	}
+	if kw := strings.TrimSpace(keyword); kw != "" {
+		like := "%" + strings.ToLower(kw) + "%"
+		where += ` AND (lower(c.display_name) LIKE ? OR c.phone_number LIKE ?
+			OR COALESCE(c.mobile2, '') LIKE ? OR COALESCE(c.landline, '') LIKE ?
+			OR COALESCE(c.fax, '') LIKE ? OR lower(COALESCE(c.job_title, '')) LIKE ?
+			OR lower(COALESCE(c.email, '')) LIKE ? OR lower(u.name) LIKE ?)`
+		for i := 0; i < 8; i++ {
+			args = append(args, like)
+		}
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)`+contactFrom+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+contactSel+contactFrom+where+
+			` ORDER BY u.sort_order, u.id, c.display_name COLLATE NOCASE, c.id LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	contacts := []Contact{}
+	for rows.Next() {
+		c, err := scanContact(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		contacts = append(contacts, c)
+	}
+	return contacts, total, rows.Err()
+}
+
 // CountContacts 返回联系人总数（unitIDs==nil 时统计全部）。
 func (s *Store) CountContacts(ctx context.Context, unitIDs []int64) (int, error) {
 	where, args := contactScope(unitIDs)

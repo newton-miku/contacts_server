@@ -3,7 +3,6 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Plus, Phone, Download, Upload, Delete } from '@element-plus/icons-vue'
 import ContactFormDialog from '../components/ContactFormDialog.vue'
-import { pb, loadPhonebook } from '../stores/phonebook'
 import { session } from '../stores/session'
 import {
   clearDirectory,
@@ -12,6 +11,7 @@ import {
   getContactLinkedUser,
   getUserVisibility,
   importCSV,
+  listContactsPaged,
   listUnits,
   updateAdminUser,
   updateUserVisibility,
@@ -22,26 +22,45 @@ const isSuper = computed(() => session.user?.role === 'super')
 // 可选单位：super=全部；单位管理员=服务端按其绑定范围返回。
 const units = ref([])
 
+// ---- 分页与查询（服务端分页，避免一次拉全量）----
+const rows = ref([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const keyword = ref('')
+const unitFilter = ref(null)
+const loading = ref(false)
+
+async function load() {
+  loading.value = true
+  try {
+    const res = await listContactsPaged({
+      page: page.value,
+      pageSize: pageSize.value,
+      keyword: keyword.value.trim() || undefined,
+      unitId: unitFilter.value || undefined,
+    })
+    rows.value = res.items || []
+    total.value = res.total || 0
+  } catch (e) {
+    ElMessage.error(`加载联系人失败：${e.message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
+function search() {
+  page.value = 1
+  load()
+}
+
 onMounted(async () => {
-  await loadPhonebook()
   try {
     units.value = await listUnits()
   } catch (e) {
     ElMessage.error(`加载单位列表失败：${e.message}`)
   }
-})
-
-const keyword = ref('')
-const unitFilter = ref(null)
-
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return pb.contacts.filter((c) => {
-    if (unitFilter.value && c.unitId !== unitFilter.value) return false
-    if (!kw) return true
-    return [c.displayName, c.phoneNumber, c.mobile2, c.landline, c.fax, c.jobTitle, c.email, c.unit]
-      .some((f) => String(f ?? '').toLowerCase().includes(kw))
-  })
+  await load()
 })
 
 async function copyPhone(phone) {
@@ -64,8 +83,7 @@ async function onRemove(row) {
     if (['super', 'root'].includes(session.user?.role)) {
       try {
         await ElMessageBox.confirm(
-          `该号码已关联账号「${linked.username}」（${linked.isActive ? '启用中' : '已停用'}）。
-是否同时停用该账号？停用后其设备令牌立即失效，但账号可恢复。`,
+          `该号码已关联账号「${linked.username}」（${linked.isActive ? '启用中' : '已停用'}）。\n是否同时停用该账号？停用后其设备令牌立即失效，但账号可恢复。`,
           '删除联系人',
           {
             type: 'warning',
@@ -105,7 +123,7 @@ async function onRemove(row) {
     }
     await deleteContact(row.id)
     ElMessage.success(disableAccount ? '已删除联系人并停用账号' : '已删除联系人')
-    await loadPhonebook({ silent: true })
+    await load()
   } catch (e) {
     ElMessage.error(`删除失败：${e.message}`)
   }
@@ -177,8 +195,9 @@ async function onClearDirectory() {
   try {
     const res = await clearDirectory()
     ElMessage.success(`已清空：删除联系人 ${res.contactsDeleted}，删除单位 ${res.unitsDeleted}，保留被绑定单位 ${res.unitsKept}`)
-    await loadPhonebook({ silent: true })
     units.value = await listUnits()
+    page.value = 1
+    await load()
   } catch (e) {
     ElMessage.error(`清空失败：${e.message}`)
   } finally {
@@ -211,8 +230,9 @@ async function onFileChange(ev) {
     const res = await importCSV(file)
     const base = `导入完成：新增 ${res.created} 条，覆盖更新 ${res.updated} 条`
     ElMessage.success(res.unitsCreated ? `${base}，自动新建单位 ${res.unitsCreated} 个` : base)
-    await loadPhonebook({ silent: true })
     units.value = await listUnits() // 若自动新建了单位，刷新单位下拉
+    page.value = 1
+    await load()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -230,6 +250,8 @@ async function onFileChange(ev) {
         :prefix-icon="Search"
         clearable
         class="search"
+        @keyup.enter="search"
+        @clear="search"
       />
       <el-select
         v-model="unitFilter"
@@ -239,10 +261,12 @@ async function onFileChange(ev) {
         default-first-option
         no-data-text="没有匹配的单位"
         class="unit-select"
+        @change="search"
       >
         <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
       </el-select>
-      <el-button :icon="Refresh" @click="loadPhonebook()">刷新</el-button>
+      <el-button type="primary" :icon="Search" @click="search">查询</el-button>
+      <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button :icon="Download" @click="onExport">导出 CSV</el-button>
       <el-button :icon="Upload" :loading="importing" @click="onPickFile">导入 CSV</el-button>
       <input ref="fileInput" type="file" accept=".csv,text/csv" style="display: none" @change="onFileChange" />
@@ -257,12 +281,9 @@ async function onFileChange(ev) {
       <el-button type="primary" :icon="Plus" @click="openCreate">新增联系人</el-button>
     </div>
 
-    <div class="summary" v-if="pb.contacts.length">
-      共 <b>{{ pb.contacts.length }}</b> 位联系人<template v-if="filtered.length !== pb.contacts.length">
-        ，筛选出 {{ filtered.length }} 位</template>
-    </div>
+    <div class="summary" v-if="total">共 <b>{{ total }}</b> 位联系人（第 {{ page }} 页）</div>
 
-    <el-table :data="filtered" v-loading="pb.loading" border stripe class="table">
+    <el-table :data="rows" v-loading="loading" border stripe class="table">
       <el-table-column prop="displayName" label="姓名" min-width="110">
         <template #default="{ row }">
           <span class="name">{{ row.displayName }}</span>
@@ -331,11 +352,24 @@ async function onFileChange(ev) {
       </template>
     </el-table>
 
+    <div class="pager">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="total"
+        :page-sizes="[20, 50, 100, 200]"
+        layout="total, sizes, prev, pager, next, jumper"
+        background
+        @current-change="load"
+        @size-change="search"
+      />
+    </div>
+
     <ContactFormDialog
       v-model="dialogVisible"
       :contact="editingContact"
       :units="units"
-      @saved="loadPhonebook({ silent: true })"
+      @saved="load"
       @unit-changed="onUnitChanged"
     />
   </div>
@@ -347,6 +381,7 @@ async function onFileChange(ev) {
 .toolbar .unit-select { width: 160px; }
 .summary { color: #64748b; font-size: 13px; margin: 0 0 8px 2px; }
 .table { border-radius: 8px; overflow: hidden; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .name { font-weight: 600; }
 .phone { color: #2563eb; font-variant-numeric: tabular-nums; }
 .muted { color: #c0c4cc; }

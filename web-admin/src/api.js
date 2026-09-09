@@ -28,6 +28,12 @@ export const me = () => api('GET', '/api/auth/me')
 export const changePassword = (oldPassword, newPassword) =>
   api('POST', '/api/auth/password', { oldPassword, newPassword })
 export const fetchSnapshot = () => api('GET', '/api/contacts')
+// 管理页联系人分页查询（服务端分页 + 搜索，避免一次拉全量）
+export const listContactsPaged = (params = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  return api('GET', `/api/admin/contacts?${qs.toString()}`)
+}
 export const getVersion = () => api('GET', '/api/version')
 export const createContact = (payload) => api('POST', '/api/contacts', payload)
 export const updateContact = (id, payload) => api('PUT', `/api/contacts/${id}`, payload)

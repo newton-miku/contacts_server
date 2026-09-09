@@ -121,6 +121,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/contacts/export", s.withStaff(s.handleExportContacts))
 	mux.HandleFunc("POST /api/contacts/import", s.withStaff(s.handleImportContacts))
 	mux.HandleFunc("GET /api/duplicates", s.withStaff(s.handleDuplicates))
+	// 管理页联系人分页查询（服务端分页 + 搜索，避免一次拉全量）
+	mux.HandleFunc("GET /api/admin/contacts", s.withStaff(s.handleListContactsPaged))
 
 	// ---- 管理员账号管理（super/root）----
 	mux.HandleFunc("GET /api/admin/users", s.withSuper(s.handleListAdminUsers))

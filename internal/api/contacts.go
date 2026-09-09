@@ -197,3 +197,55 @@ func (s *Server) handleDeleteContact(w http.ResponseWriter, r *http.Request) {
 		"删除联系人 "+existing.DisplayName+"（单位："+existing.Unit+"）")
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
+
+// handleListContactsPaged 管理页联系人分页查询（super/unit，按可见范围与搜索条件过滤）。
+// GET /api/admin/contacts?page=1&pageSize=20&keyword=&unitId=
+func (s *Server) handleListContactsPaged(w http.ResponseWriter, r *http.Request) {
+	scope, err := s.accessScope(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
+		return
+	}
+	q := r.URL.Query()
+	page := 1
+	if v, err := strconv.Atoi(q.Get("page")); err == nil && v > 0 {
+		page = v
+	}
+	pageSize := 20
+	if v, err := strconv.Atoi(q.Get("pageSize")); err == nil && v > 0 && v <= 200 {
+		pageSize = v
+	}
+	var unitID int64
+	if v := q.Get("unitId"); v != "" {
+		unitID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	// 单位过滤必须在可见范围内，否则直接返回空页。
+	if unitID > 0 && !scope.All {
+		ok := false
+		for _, id := range scope.UnitIDs {
+			if id == unitID {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"items": []store.Contact{}, "total": 0, "page": page, "pageSize": pageSize,
+			})
+			return
+		}
+	}
+
+	items, total, err := s.store.ListContactsPaged(r.Context(), scope, q.Get("keyword"), unitID,
+		pageSize, (page-1)*pageSize)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
+		return
+	}
+	if items == nil {
+		items = []store.Contact{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "page": page, "pageSize": pageSize,
+	})
+}
