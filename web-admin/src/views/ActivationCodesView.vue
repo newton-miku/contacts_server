@@ -220,9 +220,19 @@ async function saveLimit() {
           <el-input v-model="form.displayName" placeholder="仅单个手机号时填写（便于管理员核对）" style="max-width: 280px" />
         </el-form-item>
         <el-form-item label="可见单位">
-          <el-select v-model="form.unitIds" multiple filterable placeholder="选择该用户可看到的单位（含隐藏组）" style="width: 100%">
-            <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
-          </el-select>
+          <div style="width: 100%">
+            <el-select v-model="form.unitIds" multiple filterable placeholder="仅需勾选要额外授权的隐藏单位（公开单位所有人默认可见）" style="width: 100%">
+              <el-option
+                v-for="u in units"
+                :key="u.id"
+                :label="u.isPublic ? `${u.name}（公开，默认可见）` : `${u.name}（隐藏）`"
+                :value="u.id"
+              />
+            </el-select>
+            <div class="hint block">
+              公开单位对所有激活用户默认可见；这里留空即「只能看公开单位」。勾选隐藏单位后，该用户才额外看得到它们。
+            </div>
+          </div>
         </el-form-item>
         <el-form-item v-if="isSuper" label="单点可见">
           <el-select
@@ -306,6 +316,7 @@ async function saveLimit() {
 .mb { margin-bottom: 12px; }
 .card-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 .hint { color: #94a3b8; font-size: 12px; margin-left: 8px; }
+.hint.block { display: block; margin: 6px 0 0; }
 .limit-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .code { font-family: monospace; font-weight: 700; letter-spacing: 1px; }
 .code.big { font-size: 22px; margin-top: 10px; }
