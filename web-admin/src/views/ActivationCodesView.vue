@@ -12,6 +12,7 @@ import {
   listActivationCodes,
   listUnits,
   revokeActivationCode,
+  cleanupActivationCodes,
   updateSettings,
   importCodesFromContacts,
 } from '../api'
@@ -26,6 +27,8 @@ const dailyLimit = ref(100)
 const todayCreated = ref(0)
 const limitInput = ref(100)
 const defaultPwInput = ref('')
+const retentionInput = ref(30)
+const cleaning = ref(false)
 const savingLimit = ref(false)
 const statusFilter = ref('')
 
@@ -144,6 +147,7 @@ async function loadSettings() {
     todayCreated.value = s.activationToday
     limitInput.value = s.activationDailyLimit
     defaultPwInput.value = s.defaultAccountPassword || ''
+    retentionInput.value = s.codeRetentionDays ?? 30
   } catch (_) {}
 }
 
@@ -189,6 +193,30 @@ async function onCreate() {
     ElMessage.error(e.message)
   } finally {
     creating.value = false
+  }
+}
+
+// 立即清理失效（已用/已作废/已过期）且超过保留期的激活码。
+async function onCleanup() {
+  try {
+    await ElMessageBox.confirm(
+      `将删除「已使用 / 已作废 / 已过期」且创建时间超过 ${retentionInput.value} 天的激活码。
+（不影响每日额度统计；删除后无法再查看这些码的历史记录）`,
+      '清理失效激活码',
+      { type: 'warning', confirmButtonText: '清理', cancelButtonText: '取消' },
+    )
+  } catch (_) {
+    return
+  }
+  cleaning.value = true
+  try {
+    const res = await cleanupActivationCodes({ retentionDays: Number(retentionInput.value) })
+    ElMessage.success(`已清理 ${res.deleted} 条失效激活码`)
+    await reload()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    cleaning.value = false
   }
 }
 
@@ -255,6 +283,7 @@ async function saveSettings() {
     const res = await updateSettings({
       activationDailyLimit: Number(limitInput.value),
       defaultAccountPassword: defaultPwInput.value.trim(),
+      codeRetentionDays: Number(retentionInput.value),
     })
     dailyLimit.value = res.activationDailyLimit
     ElMessage.success('设置已保存')
@@ -281,6 +310,7 @@ async function saveSettings() {
       <el-button :icon="Refresh" @click="reload">刷新</el-button>
       <el-button :icon="Upload" @click="openImport">从通讯录导入</el-button>
       <el-button :icon="Printer" @click="printPending">打印未使用二维码</el-button>
+      <el-button v-if="isSuper" :icon="Delete" :loading="cleaning" @click="onCleanup">清理已失效</el-button>
       <el-button :icon="Download" @click="exportActivationCodesCSV">导出 CSV</el-button>
     </div>
 
@@ -342,6 +372,11 @@ async function saveSettings() {
         <span>每日激活码上限</span>
         <el-input-number v-model="limitInput" :min="1" :max="10000" />
         <span class="hint">今日已用 {{ todayCreated }} 个（含座机账号）</span>
+      </div>
+      <div class="limit-row" style="margin-top: 10px">
+        <span>失效码保留天数</span>
+        <el-input-number v-model="retentionInput" :min="0" :max="3650" />
+        <span class="hint">0 = 不自动清理；每天自动清理一次，也可用上方「清理已失效」手动执行</span>
       </div>
       <div class="limit-row" style="margin-top: 10px">
         <span>单位账号默认密码</span>

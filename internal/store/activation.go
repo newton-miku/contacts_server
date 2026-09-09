@@ -286,6 +286,49 @@ func (s *Store) PendingActivationPhones(ctx context.Context) (map[string]bool, e
 	return out, nil
 }
 
+// ---- 激活码清理（保留期 + 批量删除失效码）----
+
+// ActivationCodeRetentionDays 返回失效激活码的保留天数（meta 配置，默认 30；0 = 不自动清理）。
+func (s *Store) ActivationCodeRetentionDays(ctx context.Context) (int, error) {
+	v, err := s.metaGet(ctx, "activation_code_retention_days")
+	if err != nil {
+		return 0, err
+	}
+	if v == "" {
+		return 30, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 30, nil
+	}
+	return n, nil
+}
+
+// SetActivationCodeRetentionDays 设置保留天数（root；0 = 关闭自动清理）。
+func (s *Store) SetActivationCodeRetentionDays(ctx context.Context, n int) error {
+	return s.metaSet(ctx, s.db, "activation_code_retention_days", strconv.Itoa(n))
+}
+
+// CleanupActivationCodes 删除「已失效（已用/已作废/已过期）」且创建时间早于保留期的激活码，
+// 返回删除行数。retentionDays<=0 时不做任何事。
+// 注意：每日额度用 meta 计数器统计，删码不影响额度。
+func (s *Store) CleanupActivationCodes(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	cutoff := now.AddDate(0, 0, -retentionDays).Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM activation_codes
+		  WHERE created_at < ?
+		    AND (used_at IS NOT NULL OR revoked_at IS NOT NULL OR expires_at < ?)`,
+		cutoff, now.Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ---- 默认账号密码（单位/办公室账号统一初始密码，root 可改）----
 
 // DefaultAccountPassword 返回新账号的默认初始密码（meta 配置；未配置时用内置默认值）。

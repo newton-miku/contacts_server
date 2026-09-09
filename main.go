@@ -73,6 +73,19 @@ func run(cfg config.Config) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// 失效激活码定时清理：启动时跑一次，之后每 24 小时一次（保留天数由 root 配置，0 = 关闭）。
+	go func() {
+		for {
+			days, err := st.ActivationCodeRetentionDays(context.Background())
+			if err == nil && days > 0 {
+				if n, err := st.CleanupActivationCodes(context.Background(), days); err == nil && n > 0 {
+					log.Printf("已清理失效激活码 %d 条（保留 %d 天）", n, days)
+				}
+			}
+			time.Sleep(24 * time.Hour)
+		}
+	}()
+
 	// 优雅退出
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -440,10 +440,12 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	created, _ := s.store.ActivationQuotaToday(r.Context())
 	defPw, _ := s.store.DefaultAccountPassword(r.Context())
+	retention, _ := s.store.ActivationCodeRetentionDays(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"activationDailyLimit":   limit,
-		"activationToday":        created,
-		"defaultAccountPassword": defPw,
+		"activationDailyLimit":     limit,
+		"activationToday":          created,
+		"defaultAccountPassword":   defPw,
+		"codeRetentionDays":        retention,
 	})
 }
 
@@ -451,6 +453,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		ActivationDailyLimit   int     `json:"activationDailyLimit"`
 		DefaultAccountPassword *string `json:"defaultAccountPassword"`
+		CodeRetentionDays      *int    `json:"codeRetentionDays"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -475,6 +478,18 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		detail += "，并更新了默认账号密码"
+	}
+	if in.CodeRetentionDays != nil {
+		days := *in.CodeRetentionDays
+		if days < 0 || days > 3650 {
+			writeErr(w, http.StatusBadRequest, "保留天数需在 0~3650 之间（0 = 不自动清理）")
+			return
+		}
+		if err := s.store.SetActivationCodeRetentionDays(r.Context(), days); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存保留天数失败")
+			return
+		}
+		detail += fmt.Sprintf("，激活码保留 %d 天", days)
 	}
 	s.logAudit(r, store.LogCategoryAccount, "update_settings", detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "activationDailyLimit": in.ActivationDailyLimit})
@@ -554,4 +569,39 @@ func (s *Server) handleUpdateVisibility(w http.ResponseWriter, r *http.Request) 
 		fmt.Sprintf("调整 %s 的可见范围（单位 %d 个，单点联系人 %d 个）",
 			u.Username, len(in.UnitIDs), len(in.ContactIDs)))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleCleanupActivationCodes 立即清理失效激活码（super/root）。
+// 删除「已使用/已作废/已过期」且创建时间早于保留期的记录。
+func (s *Server) handleCleanupActivationCodes(w http.ResponseWriter, r *http.Request) {
+	days, err := s.store.ActivationCodeRetentionDays(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取保留天数失败")
+		return
+	}
+	var in struct {
+		RetentionDays *int `json:"retentionDays"` // 可选：本次覆盖保留天数
+	}
+	if r.ContentLength > 0 {
+		if err := decodeJSON(w, r, &in); err != nil {
+			return
+		}
+		if in.RetentionDays != nil {
+			days = *in.RetentionDays
+		}
+	}
+	if days <= 0 {
+		writeErr(w, http.StatusBadRequest, "保留天数为 0（已关闭自动清理），请先设置保留天数再清理")
+		return
+	}
+	n, err := s.store.CleanupActivationCodes(r.Context(), days)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "清理失败")
+		return
+	}
+	if n > 0 {
+		s.logAudit(r, store.LogCategoryDevice, "cleanup_codes",
+			fmt.Sprintf("清理失效激活码 %d 条（保留 %d 天）", n, days))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n, "retentionDays": days})
 }

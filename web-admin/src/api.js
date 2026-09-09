@@ -99,6 +99,8 @@ export const importCodesFromContacts = (payload) =>
 export const getContactLinkedUser = (id) => api('GET', `/api/contacts/${id}/linked-user`)
 export const deleteAdminUser = (id) => api('DELETE', `/api/admin/users/${id}`)
 export const revokeActivationCode = (id) => api('POST', `/api/activation-codes/${id}/revoke`)
+// 立即清理失效激活码（super/root）；body 可传 { retentionDays } 覆盖保留天数
+export const cleanupActivationCodes = (payload = {}) => api('POST', '/api/activation-codes/cleanup', payload)
 export function exportActivationCodesCSV() {
   window.location.href = '/api/activation-codes/export'
 }

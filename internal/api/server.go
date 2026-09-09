@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/activation-codes", s.withStaff(s.handleCreateActivationCodes))
 	mux.HandleFunc("POST /api/activation-codes/{id}/revoke", s.withStaff(s.handleRevokeActivationCode))
 	mux.HandleFunc("GET /api/activation-codes/export", s.withStaff(s.handleExportActivationCodes))
+	mux.HandleFunc("POST /api/activation-codes/cleanup", s.withSuper(s.handleCleanupActivationCodes))
 
 	// ---- 系统设置（仅 root）----
 	mux.HandleFunc("GET /api/admin/settings", s.withRoot(s.handleGetSettings))
