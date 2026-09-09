@@ -126,7 +126,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/users", s.withSuper(s.handleListAdminUsers))
 	mux.HandleFunc("POST /api/admin/users", s.withSuper(s.handleCreateAdminUser))
 	mux.HandleFunc("PUT /api/admin/users/{id}", s.withSuper(s.handleUpdateAdminUser))
+	mux.HandleFunc("DELETE /api/admin/users/{id}", s.withSuper(s.handleDeleteAdminUser))
 	mux.HandleFunc("POST /api/admin/users/{id}/reset-password", s.withSuper(s.handleResetAdminPassword))
+
+	// ---- 联系人 ↔ 账号关联（编辑/删除联系人时的联动提示）----
+	mux.HandleFunc("GET /api/contacts/{id}/linked-user", s.withStaff(s.handleContactLinkedUser))
+
+	// ---- 从通讯录导入发码（手机号→激活码；座机→账号密码账号）----
+	mux.HandleFunc("POST /api/activation-codes/from-contacts", s.withStaff(s.handleImportCodesFromContacts))
 
 	// ---- 可见性授权（super/root）：隐藏组/成员对某用户可见 ----
 	mux.HandleFunc("GET /api/admin/users/{id}/visibility", s.withVisibility(s.handleGetVisibility))

@@ -272,6 +272,59 @@ func (s *Store) SetActivationDailyLimit(ctx context.Context, n int) error {
 	return s.metaSet(ctx, s.db, "activation_daily_limit", strconv.Itoa(n))
 }
 
+// PendingActivationPhones 返回仍可用（未使用、未作废、未过期）的激活码所绑手机号集合。
+// 用于“从通讯录导入”时跳过重复发码。
+func (s *Store) PendingActivationPhones(ctx context.Context) (map[string]bool, error) {
+	codes, err := s.ListActivationCodes(ctx, 0, CodeStatusPending, 500)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		out[c.Phone] = true
+	}
+	return out, nil
+}
+
+// ---- 每日额度（激活码 + 座机账号统一计数）----
+
+func activationQuotaDate() string { return time.Now().Format("2006-01-02") }
+
+// ActivationQuotaToday 返回今日已用额度（激活码 + 由导入创建的座机账号合计）。
+func (s *Store) ActivationQuotaToday(ctx context.Context) (int, error) {
+	date, err := s.metaGet(ctx, "activation_quota_date")
+	if err != nil {
+		return 0, err
+	}
+	if date != activationQuotaDate() {
+		return 0, nil
+	}
+	v, err := s.metaGet(ctx, "activation_quota_used")
+	if err != nil || v == "" {
+		return 0, err
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
+}
+
+// AddActivationQuota 累加今日已用额度（跨天自动清零）。n<=0 时忽略。
+func (s *Store) AddActivationQuota(ctx context.Context, n int) error {
+	if n <= 0 {
+		return nil
+	}
+	cur, err := s.ActivationQuotaToday(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.metaSet(ctx, s.db, "activation_quota_date", activationQuotaDate()); err != nil {
+		return err
+	}
+	return s.metaSet(ctx, s.db, "activation_quota_used", strconv.Itoa(cur+n))
+}
+
 // ---- 设备与设备令牌 ----
 
 // Device 一台已激活的设备。

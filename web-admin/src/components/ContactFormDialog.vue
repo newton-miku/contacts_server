@@ -9,7 +9,7 @@ const props = defineProps({
   // 可选单位（[{id, name}]）：super=全部，unit=服务端已按角色返回其绑定单位。
   units: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:modelValue', 'saved'])
+const emit = defineEmits(['update:modelValue', 'saved', 'unitChanged'])
 
 const formRef = ref()
 const saving = ref(false)
@@ -82,8 +82,13 @@ async function submit() {
       email: emptyToNull(form.email),
     }
     if (props.contact) {
+      const oldUnitId = props.contact.unitId
       await updateContact(props.contact.id, payload)
       ElMessage.success('已更新联系人')
+      // 单位变更时通知外层：可能需要同步关联账号的可见单位
+      if (oldUnitId !== payload.unitId) {
+        emit('unitChanged', { contactId: props.contact.id, oldUnitId, newUnitId: payload.unitId })
+      }
     } else {
       await createContact(payload)
       ElMessage.success('已新增联系人')

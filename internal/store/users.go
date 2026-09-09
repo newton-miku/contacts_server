@@ -209,6 +209,19 @@ func scanUser(row Scanner) (User, error) {
 	return u, nil
 }
 
+// DeleteUser 删除账号（级联删除其单位绑定、设备、设备令牌、会话、单点授权）。
+// 外键均为 ON DELETE CASCADE，故只需删 users 一行。
+func (s *Store) DeleteUser(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetUserActive 设置账号启用/停用（停用后其设备令牌与会话立即失效）。
 func (s *Store) SetUserActive(ctx context.Context, id int64, active bool) error {
 	v := 0

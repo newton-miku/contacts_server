@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Download, Delete, Printer, Ticket } from '@element-plus/icons-vue'
+import { Refresh, Download, Delete, Printer, Ticket, Upload } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
 import { session } from '../stores/session'
 import { pb, loadPhonebook } from '../stores/phonebook'
@@ -13,6 +13,7 @@ import {
   listUnits,
   revokeActivationCode,
   updateSettings,
+  importCodesFromContacts,
 } from '../api'
 
 const isSuper = computed(() => ['super', 'root'].includes(session.user?.role))
@@ -35,6 +36,80 @@ const form = reactive({
   expiresInDays: 7,
 })
 const creating = ref(false)
+
+const importVisible = ref(false)
+const importing = ref(false)
+const importForm = reactive({ unitIds: [], contactIds: [], grantOwnUnit: true, expiresInDays: 7, initialPassword: '' })
+const importResult = ref(null)
+
+const contactOptionsInUnits = computed(() => {
+  const set = new Set(importForm.unitIds)
+  return pb.contacts
+    .filter((c) => importForm.unitIds.length === 0 || set.has(c.unitId))
+    .map((c) => ({ id: c.id, label: `${c.displayName}（${c.unit || '未分组'}）` }))
+})
+
+function openImport() {
+  importForm.unitIds = []
+  importForm.contactIds = []
+  importForm.grantOwnUnit = true
+  importForm.expiresInDays = 7
+  importForm.initialPassword = ''
+  importResult.value = null
+  importVisible.value = true
+}
+
+async function onImport() {
+  if (!importForm.unitIds.length && !importForm.contactIds.length) {
+    ElMessage.warning('请至少选择一个单位或若干联系人')
+    return
+  }
+  importing.value = true
+  try {
+    const res = await importCodesFromContacts({
+      unitIds: importForm.unitIds,
+      contactIds: importForm.contactIds,
+      grantOwnUnit: importForm.grantOwnUnit,
+      expiresInDays: Number(importForm.expiresInDays) || 7,
+      initialPassword: importForm.initialPassword.trim(),
+    })
+    importResult.value = res
+    ElMessage.success(
+      `生成激活码 ${(res.codes || []).length} 个、账号 ${(res.accounts || []).length} 个、跳过 ${(res.skipped || []).length} 条`,
+    )
+    await reload()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    importing.value = false
+  }
+}
+
+const importRows = computed(() => {
+  const r = importResult.value
+  if (!r) return []
+  const unitNames = (ids) => (ids || []).map((id) => units.value.find((u) => u.id === id)?.name || id).join(' / ')
+  return [
+    ...(r.codes || []).map((c) => ({ kind: '激活码', key: c.code, name: c.displayName, extra: unitNames(c.unitIds) })),
+    ...(r.accounts || []).map((a) => ({ kind: '账号', key: a.username, name: a.name, extra: `密码 ${a.password} · ${unitNames(a.unitIds)}` })),
+    ...(r.skipped || []).map((s) => ({ kind: '跳过', key: s.phone || '', name: s.name || '', extra: s.reason || '' })),
+  ]
+})
+
+function exportImportResult() {
+  const rows = [['类型', '码 / 账号', '姓名', '密码 / 可见单位 / 原因']]
+  for (const r of importRows.value) rows.push([r.kind, r.key, r.name || '', r.extra || ''])
+  const LF = String.fromCharCode(10)
+  const BOM = String.fromCharCode(0xFEFF)
+  const quote = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'
+  const csv = BOM + rows.map((r) => r.map(quote).join(',')).join(LF)
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'import_result.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const qrVisible = ref(false)
 const qrDataUrl = ref('')
@@ -199,6 +274,7 @@ async function saveLimit() {
         <el-option label="已作废" value="revoked" />
       </el-select>
       <el-button :icon="Refresh" @click="reload">刷新</el-button>
+      <el-button :icon="Upload" @click="openImport">从通讯录导入</el-button>
       <el-button :icon="Printer" @click="printPending">打印未使用二维码</el-button>
       <el-button :icon="Download" @click="exportActivationCodesCSV">导出 CSV</el-button>
     </div>
@@ -300,6 +376,61 @@ async function saveLimit() {
       </template>
     </el-table>
 
+    <el-dialog v-model="importVisible" title="从通讯录导入（批量发码）" width="640px" :close-on-click-modal="false">
+      <el-form label-width="110px" @submit.prevent>
+        <el-form-item label="按单位导入">
+          <el-select v-model="importForm.unitIds" multiple filterable clearable placeholder="选单位 = 该单位全部联系人" style="width: 100%">
+            <el-option
+              v-for="u in units"
+              :key="u.id"
+              :label="u.isPublic ? `${u.name}（公开）` : `${u.name}（隐藏）`"
+              :value="u.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="再选联系人">
+          <el-select v-model="importForm.contactIds" multiple filterable clearable placeholder="可另选若干联系人（可搜索）" style="width: 100%">
+            <el-option v-for="c in contactOptionsInUnits" :key="c.id" :label="c.label" :value="c.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="自动授予本单位">
+          <el-switch v-model="importForm.grantOwnUnit" />
+          <span class="hint">每个账号可见「所在单位」+ 公开单位</span>
+        </el-form-item>
+        <el-form-item label="激活码有效期">
+          <el-input-number v-model="importForm.expiresInDays" :min="1" :max="30" />
+          <span class="hint">天</span>
+        </el-form-item>
+        <el-form-item label="座机账号密码">
+          <el-input v-model="importForm.initialPassword" placeholder="留空 = 每个账号随机生成（结果里显示一次）" style="max-width: 340px" />
+        </el-form-item>
+      </el-form>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="手机号联系人 → 一次性激活码（App 输码激活）；只有座机的联系人 → 账号密码登录账号（桌面端使用）。两者都占用每日额度。"
+      />
+      <div v-if="importResult" class="import-result">
+        <el-divider />
+        <div class="summary">
+          生成激活码 {{ (importResult.codes || []).length }} 个 · 账号 {{ (importResult.accounts || []).length }} 个 ·
+          跳过 {{ (importResult.skipped || []).length }} 条
+        </div>
+        <el-table :data="importRows" size="small" border max-height="260">
+          <el-table-column prop="kind" label="类型" width="80" />
+          <el-table-column prop="key" label="码 / 账号" width="150" />
+          <el-table-column prop="name" label="姓名" width="110" />
+          <el-table-column prop="extra" label="密码 / 可见单位 / 跳过原因" min-width="240" />
+        </el-table>
+        <el-button size="small" :icon="Download" style="margin-top: 8px" @click="exportImportResult">导出结果 CSV</el-button>
+      </div>
+      <template #footer>
+        <el-button @click="importVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="importing" @click="onImport">生成</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="qrVisible" title="激活码二维码" width="380" align-center>
       <div class="qr-box">
         <img v-if="qrDataUrl" :src="qrDataUrl" alt="QR" class="qr-img" />
@@ -317,6 +448,8 @@ async function saveLimit() {
 .card-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 .hint { color: #94a3b8; font-size: 12px; margin-left: 8px; }
 .hint.block { display: block; margin: 6px 0 0; }
+.import-result { margin-top: 12px; }
+.import-result .summary { font-size: 13px; color: #475569; margin-bottom: 8px; }
 .limit-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .code { font-family: monospace; font-weight: 700; letter-spacing: 1px; }
 .code.big { font-size: 22px; margin-top: 10px; }

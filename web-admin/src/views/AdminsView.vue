@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Key } from '@element-plus/icons-vue'
-import { listAdminUsers, createAdminUser, updateAdminUser, resetAdminPassword, listUnits } from '../api'
+import { listAdminUsers, createAdminUser, updateAdminUser, resetAdminPassword, deleteAdminUser, listUnits } from '../api'
 import { session } from '../stores/session'
 
 const router = useRouter()
@@ -130,6 +130,31 @@ async function submit() {
   }
 }
 
+// 删除账号（super/root）：级联删除其设备、令牌、会话、单位绑定与单点授权，不可恢复。
+async function onDelete(row) {
+  if (isSelf(row)) {
+    ElMessage.info('不能删除自己的账号')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除账号「${row.username}」吗？
+将同时删除其设备绑定、登录令牌、单位绑定与单点授权，且不可恢复。`,
+      '删除账号',
+      { type: 'warning', confirmButtonText: '删除', confirmButtonClass: 'el-button--danger', cancelButtonText: '取消' },
+    )
+  } catch (_) {
+    return
+  }
+  try {
+    await deleteAdminUser(row.id)
+    ElMessage.success('已删除账号')
+    await load()
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
 async function onResetPassword(row) {
   if (isSelf(row)) {
     ElMessage.info('自己的密码请在「修改密码」页修改')
@@ -194,11 +219,12 @@ async function onResetPassword(row) {
           <el-tag v-else type="success" effect="plain" size="small">已设置</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="250" align="right">
+      <el-table-column label="操作" width="300" align="right">
         <template #default="{ row }">
           <el-button v-if="!isSelf(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-if="!isSelf(row)" link type="warning" @click="onResetPassword(row)">重置密码</el-button>
           <el-button v-if="!['super', 'root'].includes(row.role)" link @click="goVisibility">可见范围</el-button>
+          <el-button v-if="!isSelf(row)" link type="danger" @click="onDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>

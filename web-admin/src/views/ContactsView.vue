@@ -5,7 +5,17 @@ import { Search, Refresh, Plus, Phone, Download, Upload, Delete } from '@element
 import ContactFormDialog from '../components/ContactFormDialog.vue'
 import { pb, loadPhonebook } from '../stores/phonebook'
 import { session } from '../stores/session'
-import { clearDirectory, deleteContact, exportCSV, importCSV, listUnits } from '../api'
+import {
+  clearDirectory,
+  deleteContact,
+  exportCSV,
+  getContactLinkedUser,
+  getUserVisibility,
+  importCSV,
+  listUnits,
+  updateAdminUser,
+  updateUserVisibility,
+} from '../api'
 
 const isSuper = computed(() => session.user?.role === 'super')
 
@@ -43,23 +53,92 @@ async function copyPhone(phone) {
   }
 }
 
+// 删除联系人：若该号码已关联账号，询问是否同时停用账号（可恢复）。
 async function onRemove(row) {
+  let linked = null
   try {
-    await ElMessageBox.confirm(`确定删除联系人「${row.displayName}」吗？此操作不可撤销。`, '删除联系人', {
-      type: 'warning',
-      confirmButtonText: '删除',
-      confirmButtonClass: 'el-button--danger',
-      cancelButtonText: '取消',
-    })
-  } catch (_) {
-    return // 取消
+    linked = await getContactLinkedUser(row.id)
+  } catch (_) {}
+  let disableAccount = false
+  if (linked?.linked) {
+    if (['super', 'root'].includes(session.user?.role)) {
+      try {
+        await ElMessageBox.confirm(
+          `该号码已关联账号「${linked.username}」（${linked.isActive ? '启用中' : '已停用'}）。
+是否同时停用该账号？停用后其设备令牌立即失效，但账号可恢复。`,
+          '删除联系人',
+          {
+            type: 'warning',
+            confirmButtonText: '停用账号并删除',
+            cancelButtonText: '仅删除联系人',
+            distinguishCancelAndClose: true,
+          },
+        )
+        disableAccount = true
+      } catch (action) {
+        if (action === 'close') return // 关闭弹窗 = 取消
+      }
+    } else {
+      ElMessage.info(`该号码已关联账号「${linked.username}」，账号处理需超级管理员`)
+    }
+  } else {
+    try {
+      await ElMessageBox.confirm(`确定删除联系人「${row.displayName}」吗？此操作不可撤销。`, '删除联系人', {
+        type: 'warning',
+        confirmButtonText: '删除',
+        confirmButtonClass: 'el-button--danger',
+        cancelButtonText: '取消',
+      })
+    } catch (_) {
+      return
+    }
   }
   try {
+    if (disableAccount && linked?.linked) {
+      const vis = await getUserVisibility(linked.userId)
+      await updateAdminUser(linked.userId, {
+        displayName: linked.displayName || '',
+        role: linked.role,
+        isActive: false,
+        unitIds: vis.unitIds || [],
+      })
+    }
     await deleteContact(row.id)
-    ElMessage.success('已删除联系人')
+    ElMessage.success(disableAccount ? '已删除联系人并停用账号' : '已删除联系人')
     await loadPhonebook({ silent: true })
   } catch (e) {
     ElMessage.error(`删除失败：${e.message}`)
+  }
+}
+
+// 联系人换单位后，询问是否把关联账号的可见单位同步为新单位（仅 super/root）。
+async function onUnitChanged({ contactId, oldUnitId, newUnitId }) {
+  try {
+    const linked = await getContactLinkedUser(contactId)
+    if (!linked?.linked) return
+    if (!['super', 'root'].includes(session.user?.role)) {
+      ElMessage.info(`该号码已关联账号「${linked.username}」，可见单位需由超级管理员调整`)
+      return
+    }
+    try {
+      await ElMessageBox.confirm(
+        `「${linked.username}」已关联账号。是否把该账号的可见单位从原单位改为新单位？`,
+        '同步账号可见范围',
+        { confirmButtonText: '同步', cancelButtonText: '不同步' },
+      )
+    } catch (_) {
+      return
+    }
+    const vis = await getUserVisibility(linked.userId)
+    const unitIds = (vis.unitIds || []).filter((id) => id !== oldUnitId)
+    if (!unitIds.includes(newUnitId)) unitIds.push(newUnitId)
+    await updateUserVisibility(linked.userId, {
+      unitIds,
+      contactIds: (vis.contacts || []).map((c) => c.id),
+    })
+    ElMessage.success('账号可见单位已同步')
+  } catch (e) {
+    ElMessage.error(e.message)
   }
 }
 
@@ -257,6 +336,7 @@ async function onFileChange(ev) {
       :contact="editingContact"
       :units="units"
       @saved="loadPhonebook({ silent: true })"
+      @unit-changed="onUnitChanged"
     />
   </div>
 </template>

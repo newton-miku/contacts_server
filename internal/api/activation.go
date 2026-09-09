@@ -281,7 +281,7 @@ func (s *Server) handleCreateActivationCodes(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusInternalServerError, "读取限额失败")
 		return
 	}
-	created, err := s.store.CountActivationCodesSince(r.Context(), startOfTodayUTC())
+	created, err := s.store.ActivationQuotaToday(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "统计今日数量失败")
 		return
@@ -297,6 +297,7 @@ func (s *Server) handleCreateActivationCodes(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusInternalServerError, "生成激活码失败")
 		return
 	}
+	_ = s.store.AddActivationQuota(r.Context(), len(codes))
 	s.logAudit(r, store.LogCategoryDevice, "code_create",
 		fmt.Sprintf("生成 %d 个激活码（有效期 %d 天）", len(codes), days))
 	writeJSON(w, http.StatusCreated, map[string]any{"codes": codes, "dailyLimit": limit, "todayCreated": created + len(codes)})
@@ -317,7 +318,7 @@ func (s *Server) handleListActivationCodes(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	limitToday, _ := s.store.ActivationDailyLimit(r.Context())
-	createdToday, _ := s.store.CountActivationCodesSince(r.Context(), startOfTodayUTC())
+	createdToday, _ := s.store.ActivationQuotaToday(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"codes":        codes,
 		"dailyLimit":   limitToday,
@@ -437,7 +438,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
-	created, _ := s.store.CountActivationCodesSince(r.Context(), startOfTodayUTC())
+	created, _ := s.store.ActivationQuotaToday(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"activationDailyLimit": limit,
 		"activationToday":      created,

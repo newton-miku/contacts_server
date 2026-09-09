@@ -93,6 +93,11 @@ export const listActivationCodes = (params = {}) => {
   return api('GET', `/api/activation-codes?${qs.toString()}`)
 }
 export const createActivationCodes = (payload) => api('POST', '/api/activation-codes', payload)
+// 从通讯录导入：手机号→激活码；座机→账号密码账号
+export const importCodesFromContacts = (payload) =>
+  api('POST', '/api/activation-codes/from-contacts', payload)
+export const getContactLinkedUser = (id) => api('GET', `/api/contacts/${id}/linked-user`)
+export const deleteAdminUser = (id) => api('DELETE', `/api/admin/users/${id}`)
 export const revokeActivationCode = (id) => api('POST', `/api/activation-codes/${id}/revoke`)
 export function exportActivationCodesCSV() {
   window.location.href = '/api/activation-codes/export'
