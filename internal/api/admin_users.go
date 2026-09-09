@@ -49,6 +49,12 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch in.Role {
+	case store.RoleRoot:
+		// 系统最高管理员：不绑单位；只有 root 能创建 root。
+		if userFrom(r).Role != store.RoleRoot {
+			writeErr(w, http.StatusForbidden, "只有系统最高管理员（root）可创建 root 账号")
+			return
+		}
 	case store.RoleSuper:
 		// 超管：不绑单位。
 	case store.RoleUnit:
@@ -59,7 +65,7 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 	case store.RoleEndUser:
 		// 只读用户（手机端）：可绑 0..N 个单位，0 个单位时也能看公开单位。
 	default:
-		writeErr(w, http.StatusBadRequest, "角色只能是 super、unit 或 enduser")
+		writeErr(w, http.StatusBadRequest, "角色只能是 root、super、unit 或 enduser")
 		return
 	}
 	// 校验所有 unit id 均存在（超管可任意指派）。
@@ -140,7 +146,18 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取账号失败")
 		return
 	}
+	// 只有 root 能改动 root 账号（防止 super 提权/降权）。
+	if target.Role == store.RoleRoot && userFrom(r).Role != store.RoleRoot {
+		writeErr(w, http.StatusForbidden, "只有系统最高管理员（root）可修改 root 账号")
+		return
+	}
 	switch in.Role {
+	case store.RoleRoot:
+		// 系统最高管理员：不绑单位；只有 root 能设置 root 角色。
+		if userFrom(r).Role != store.RoleRoot {
+			writeErr(w, http.StatusForbidden, "只有系统最高管理员（root）可设置 root 角色")
+			return
+		}
 	case store.RoleSuper:
 		// 超管：不绑单位。
 	case store.RoleUnit:
@@ -151,7 +168,7 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 	case store.RoleEndUser:
 		// 只读用户（手机端）：可绑 0..N 个单位，0 个单位时也能看公开单位。
 	default:
-		writeErr(w, http.StatusBadRequest, "角色只能是 super、unit 或 enduser")
+		writeErr(w, http.StatusBadRequest, "角色只能是 root、super、unit 或 enduser")
 		return
 	}
 	for _, uid := range in.UnitIDs {
@@ -166,9 +183,8 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 防止移除最后一个可用的超级管理员。
-	if target.Role == store.RoleSuper && target.IsActive &&
-		(in.Role != store.RoleSuper || !in.IsActive) {
+	// 防止移除最后一个可用的全局管理员（super/root）。
+	if store.IsSuperRole(target.Role) && target.IsActive && !store.IsSuperRole(in.Role) {
 		ok, err := s.otherActiveSuperExists(r.Context(), target.ID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "校验账号失败")
@@ -179,9 +195,22 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// root 另需单独保证至少保留一个：降级/停用 root 时校验。
+	if target.Role == store.RoleRoot && target.IsActive &&
+		(in.Role != store.RoleRoot || !in.IsActive) {
+		ok, err := s.otherActiveRootExists(r.Context(), target.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "校验账号失败")
+			return
+		}
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "系统至少需保留一个启用的 root 管理员")
+			return
+		}
+	}
 
-	// super 不保留单位绑定；unit/enduser 按 payload 整表替换绑定（enduser 可为 0..N）。
-	if in.Role == store.RoleSuper {
+	// 全局管理员不保留单位绑定；unit/enduser 按 payload 整表替换绑定（enduser 可为 0..N）。
+	if store.IsSuperRole(in.Role) {
 		in.UnitIDs = nil
 	}
 	if err := s.store.UpdateUserProfile(r.Context(), id, in.DisplayName, in.Role, in.IsActive, in.UnitIDs); err != nil {
@@ -255,14 +284,28 @@ func (s *Server) handleResetAdminPassword(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
 
-// otherActiveSuperExists 是否存在除 excludeID 外的启用超级管理员。
+// otherActiveSuperExists 是否存在除 excludeID 外的启用全局管理员（super/root）。
 func (s *Server) otherActiveSuperExists(ctx context.Context, excludeID int64) (bool, error) {
 	users, err := s.store.ListUsers(ctx)
 	if err != nil {
 		return false, err
 	}
 	for _, u := range users {
-		if u.ID != excludeID && u.Role == store.RoleSuper && u.IsActive {
+		if u.ID != excludeID && u.IsActive && store.IsSuperRole(u.Role) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// otherActiveRootExists 是否存在除 excludeID 外的启用 root。
+func (s *Server) otherActiveRootExists(ctx context.Context, excludeID int64) (bool, error) {
+	users, err := s.store.ListUsers(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, u := range users {
+		if u.ID != excludeID && u.IsActive && u.Role == store.RoleRoot {
 			return true, nil
 		}
 	}
@@ -271,6 +314,8 @@ func (s *Server) otherActiveSuperExists(ctx context.Context, excludeID int64) (b
 
 func roleLabel(role string) string {
 	switch role {
+	case store.RoleRoot:
+		return "系统管理员"
 	case store.RoleSuper:
 		return "超级管理员"
 	case store.RoleEndUser:

@@ -203,6 +203,29 @@ func (s *Store) ListContacts(ctx context.Context, unitIDs []int64) ([]Contact, e
 	return contacts, rows.Err()
 }
 
+// ListContactsScoped 按可见范围返回联系人（单位命中 或 单点授权命中）。
+// 这是所有对外读取（手机端/网页）的统一入口；范围为空则返回空集。
+func (s *Store) ListContactsScoped(ctx context.Context, sc ContactScope) ([]Contact, error) {
+	where, args := contactScopeOf(sc)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+contactSel+contactFrom+where+
+			` ORDER BY u.sort_order, u.id, c.display_name COLLATE NOCASE, c.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	contacts := []Contact{}
+	for rows.Next() {
+		c, err := scanContact(rows)
+		if err != nil {
+			return nil, err
+		}
+		contacts = append(contacts, c)
+	}
+	return contacts, rows.Err()
+}
+
 // CountContacts 返回联系人总数（unitIDs==nil 时统计全部）。
 func (s *Store) CountContacts(ctx context.Context, unitIDs []int64) (int, error) {
 	where, args := contactScope(unitIDs)

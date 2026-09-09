@@ -8,10 +8,14 @@ import (
 
 // 账号角色。
 const (
-	RoleSuper   = "super"   // 超级管理员：管单位/管理员/日志 + 全部数据
+	RoleRoot    = "root"    // 系统最高管理员：全局 + 账号管理（可创建/修改 root）+ 系统设置（如每日激活码上限）
+	RoleSuper   = "super"   // 超级管理员：全部数据 + 单位/管理员/日志 + 可见性配置
 	RoleUnit    = "unit"    // 单位管理员：只能管绑定单位的联系人
-	RoleEndUser = "enduser" // 只读人员账号：仅手机端可登录，可见范围=绑定单位 ∪ 公开单位
+	RoleEndUser = "enduser" // 只读人员账号：仅手机端可登录，可见范围=绑定单位 ∪ 公开单位 ∪ 单点授权
 )
+
+// IsSuperRole 判断是否具备“全局管理员”能力（super 或 root）。
+func IsSuperRole(role string) bool { return role == RoleSuper || role == RoleRoot }
 
 // User 后台账号。role 取 RoleSuper/RoleUnit/RoleEndUser。
 // MustChangePassword=1 表示该账号仍在使用初始/重置的密码，登录后必须先改密才能做其它操作。
@@ -77,7 +81,7 @@ func (s *Store) UserWithUnits(ctx context.Context, id int64) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	if u.Role == RoleSuper {
+	if IsSuperRole(u.Role) {
 		return u, nil
 	}
 	units, err := s.UserUnits(ctx, id)

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -47,21 +46,17 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListContacts 返回联系人快照（含版本号）。匿名客户端/超管 = 全部；
-// 单位管理员 = 仅绑定单位（登录态由可选认证识别；无 cookie 即匿名公开读）。
+// handleListContacts 返回联系人快照（含版本号），**必须携带有效令牌**（账号会话或设备令牌）。
+// 可见范围由 accessScope 统一计算：super/root=全部；unit 网页=绑定单位；
+// 手机端（enduser/unit bearer/设备令牌）=绑定单位 ∪ 公开单位 ∪ 单点授权联系人。
 // 响应经 gzip 中间件压缩，减小传输体积。
 func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
-	// 可选认证：携带有效会话（管理端）则按角色过滤；否则按匿名公开读返回全部（客户端）。
-	if u, err := s.authenticate(r); err == nil {
-		ctx := context.WithValue(r.Context(), userKey, u)
-		r = r.WithContext(ctx)
-	}
-	unitIDs, err := s.accessUnitIDs(r)
+	scope, err := s.accessScope(r)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
 		return
 	}
-	contacts, err := s.store.ListContacts(r.Context(), unitIDs)
+	contacts, err := s.store.ListContactsScoped(r.Context(), scope)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
 		return

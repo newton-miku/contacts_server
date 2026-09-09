@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataBoard, Phone, Lock, SwitchButton, User, OfficeBuilding, Avatar, Tickets, Search, InfoFilled } from '@element-plus/icons-vue'
+import { DataBoard, Phone, Lock, SwitchButton, User, OfficeBuilding, Avatar, Tickets, Search, InfoFilled, Key } from '@element-plus/icons-vue'
 import { session, signOut } from '../stores/session'
 import { pb, loadPhonebook } from '../stores/phonebook'
 import { fmtTime, getVersion } from '../api'
@@ -24,9 +24,10 @@ const userName = computed(() => {
 })
 // 首次登录强制改密期间，侧边栏只放开「修改密码」，其余菜单项禁用。
 const mustChange = computed(() => session.user?.mustChangePassword === true)
-const isSuper = computed(() => session.user?.role === 'super')
+const isSuper = computed(() => ['super', 'root'].includes(session.user?.role))
 const roleText = computed(() =>
-  ({ super: '超级管理员', unit: '单位管理员', enduser: '只读用户（仅手机端）' })[session.user?.role] ?? '',
+  ({ root: '系统管理员', super: '超级管理员', unit: '单位管理员', enduser: '只读用户（仅手机端）' })[session.user?.role] ??
+    '',
 )
 
 async function logout() {
@@ -66,7 +67,15 @@ onMounted(() => {
           <el-icon><Search /></el-icon>
           <span>号码查重</span>
         </el-menu-item>
+        <el-menu-item index="/activation-codes" :disabled="mustChange">
+          <el-icon><Tickets /></el-icon>
+          <span>激活码</span>
+        </el-menu-item>
         <template v-if="isSuper">
+          <el-menu-item index="/visibility" :disabled="mustChange">
+            <el-icon><Key /></el-icon>
+            <span>可见性配置</span>
+          </el-menu-item>
           <el-menu-item index="/units" :disabled="mustChange">
             <el-icon><OfficeBuilding /></el-icon>
             <span>单位管理</span>

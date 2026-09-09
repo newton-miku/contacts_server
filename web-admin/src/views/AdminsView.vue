@@ -1,9 +1,13 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Key } from '@element-plus/icons-vue'
 import { listAdminUsers, createAdminUser, updateAdminUser, resetAdminPassword, listUnits } from '../api'
 import { session } from '../stores/session'
+
+const router = useRouter()
+const isRoot = computed(() => session.user?.role === 'root')
 
 const rows = ref([])
 const units = ref([]) // 全部单位（超管维护管理员用）
@@ -22,8 +26,9 @@ const form = reactive({
 })
 
 const isSelf = (row) => session.user?.id === row.id
-const roleName = (r) => ({ super: '超级管理员', unit: '单位管理员', enduser: '只读用户' })[r] || r
-const roleTag = (r) => ({ super: 'danger', unit: 'warning', enduser: 'success' })[r] || 'info'
+const roleName = (r) => ({ root: '系统管理员', super: '超级管理员', unit: '单位管理员', enduser: '只读用户' })[r] || r
+const roleTag = (r) => ({ root: 'danger', super: 'warning', unit: 'primary', enduser: 'success' })[r] || 'info'
+const goVisibility = () => router.push('/visibility')
 
 async function load() {
   loading.value = true
@@ -95,7 +100,7 @@ async function submit() {
       displayName: form.displayName.trim(),
       role: form.role,
       isActive: form.isActive,
-      unitIds: form.role === 'super' ? [] : form.unitIds,
+      unitIds: ['super', 'root'].includes(form.role) ? [] : form.unitIds,
     }
     if (editing.value) {
       await updateAdminUser(editing.value.id, payload)
@@ -159,7 +164,7 @@ async function onResetPassword(row) {
       </el-table-column>
       <el-table-column label="负责单位" min-width="170">
         <template #default="{ row }">
-          <span v-if="row.role !== 'super'">{{ (row.unitNames || []).join('、') || '（未绑定）' }}</span>
+          <span v-if="!['super', 'root'].includes(row.role)">{{ (row.unitNames || []).join('、') || '（未绑定）' }}</span>
           <span v-else class="all">全部</span>
         </template>
       </el-table-column>
@@ -176,10 +181,11 @@ async function onResetPassword(row) {
           <el-tag v-else type="success" effect="plain" size="small">已改</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="190" align="right">
+      <el-table-column label="操作" width="250" align="right">
         <template #default="{ row }">
           <el-button v-if="!isSelf(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-if="!isSelf(row)" link type="warning" @click="onResetPassword(row)">重置密码</el-button>
+          <el-button v-if="!['super', 'root'].includes(row.role)" link @click="goVisibility">可见范围</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -200,6 +206,7 @@ async function onResetPassword(row) {
         </el-row>
         <el-form-item label="角色" prop="role">
           <el-radio-group v-model="form.role">
+            <el-radio v-if="isRoot" value="root">系统管理员</el-radio>
             <el-radio value="super">超级管理员</el-radio>
             <el-radio value="unit">单位管理员</el-radio>
             <el-radio value="enduser">只读用户</el-radio>

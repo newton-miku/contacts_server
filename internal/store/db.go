@@ -38,6 +38,9 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // migrate 幂等执行 schema 迁移。
 func (s *Store) migrate(ctx context.Context) error {
+	// schema_version 9：
+	//  - 设备激活（devices/device_tokens/activation_codes）+ 单点可见授权（user_contact_grants）；
+	//    users 新增 can_manage_visibility；新增 root 角色（系统最高管理员，初始 admin 账号升为 root）。
 	// schema_version 8：
 	//  - 单位新增「公开单位」标记 is_public：公开单位的联系人对任何登录用户可见
 	//    （手机端 enduser/unit 的“全局可见”，见 internal/store/units.go PublicUnitIDs）。
@@ -101,6 +104,50 @@ func (s *Store) migrate(ctx context.Context) error {
 			detail     TEXT NOT NULL DEFAULT '',
 			ip         TEXT NOT NULL DEFAULT ''
 		)`,
+		// v9：设备激活 + 隐藏组可见性
+		`CREATE TABLE IF NOT EXISTS devices (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			phone         TEXT NOT NULL,
+			label         TEXT,
+			status        TEXT NOT NULL DEFAULT 'active', -- active | revoked
+			created_at    TEXT NOT NULL,
+			last_seen_at  TEXT,
+			last_ip       TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS device_tokens (
+			token_hash TEXT PRIMARY KEY,
+			device_id  INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS activation_codes (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			code             TEXT NOT NULL UNIQUE,      -- 10 位大写字母+数字（输入不区分大小写）
+			phone            TEXT NOT NULL,             -- 激活时手机号必须与之一致
+			display_name     TEXT,
+			role             TEXT NOT NULL DEFAULT 'enduser',
+			unit_ids_json    TEXT NOT NULL DEFAULT '[]', -- 激活后绑定/可见的单位（含隐藏组）
+			contact_ids_json TEXT NOT NULL DEFAULT '[]', -- 单点可见的联系人
+			created_by       INTEGER,
+			created_at       TEXT NOT NULL,
+			expires_at       TEXT NOT NULL,
+			used_at          TEXT,
+			used_device_id   INTEGER,
+			revoked_at       TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_contact_grants (
+			user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			created_by INTEGER,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (user_id, contact_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_device_tokens_device ON device_tokens(device_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activation_codes_created ON activation_codes(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_activation_codes_phone ON activation_codes(phone)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_contact_grants_user ON user_contact_grants(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category)`,
@@ -158,6 +205,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 
+	// v9：可见性配置权限标志（预留；本期 super/root 直接允许，暂不开放勾选）。
+	if err := s.addColumnIfMissing(ctx, "users", "can_manage_visibility",
+		"INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
 	// 老库补列：contacts.landline（座机）/ contacts.fax（传真）v6、contacts.mobile2（手机2）v7，
 	// 均可选。
 	if err := s.addColumnIfMissing(ctx, "contacts", "landline", "TEXT"); err != nil {
@@ -177,9 +230,10 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	// 初始化 meta 键（若缺失）。
 	defaults := map[string]string{
-		"schema_version":  "8",
-		"data_version":    "0",
-		"data_updated_at": time.Now().UTC().Format(time.RFC3339),
+		"schema_version":         "9",
+		"data_version":           "0",
+		"data_updated_at":        time.Now().UTC().Format(time.RFC3339),
+		"activation_daily_limit": "100", // 每日可生成的激活码上限（root 可改）
 	}
 	for k, v := range defaults {
 		if _, err := s.db.ExecContext(ctx,
@@ -187,11 +241,25 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	// 已跑过的老库 meta 里仍是旧版本号：幂等推进到 v8（defaults 只 INSERT 不会改旧值；
-	// 兼容各历史版本号 4/5/6/7——旧代码默认值曾停在 4，且递增链并非全覆盖）。
+	// 已跑过的老库 meta 里仍是旧版本号：幂等推进到 v9（defaults 只 INSERT 不会改旧值；
+	// 兼容各历史版本号 4~8——旧代码默认值曾停在 4，且递增链并非全覆盖）。
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE meta SET value = '8' WHERE key = 'schema_version' AND value IN ('4', '5', '6', '7')`); err != nil {
+		`UPDATE meta SET value = '9' WHERE key = 'schema_version' AND value IN ('4', '5', '6', '7', '8')`); err != nil {
 		return err
+	}
+
+	// v9：确保存在 root（系统最高管理员）——没有 root 时把最早创建的启用 super 提升为 root。
+	var rootCount int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE role = 'root'`).Scan(&rootCount); err != nil {
+		return err
+	}
+	if rootCount == 0 {
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE users SET role = 'root'
+			  WHERE id = (SELECT id FROM users WHERE role = 'super' AND is_active = 1 ORDER BY id LIMIT 1)`); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -251,6 +319,7 @@ func (s *Store) metaSet(ctx context.Context, q querier, key, value string) error
 
 type querier interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // bumpVersion 在给定事务/执行器内递增数据版本并刷新更新时间。

@@ -116,7 +116,7 @@ func runRecoverAdmin(args []string) {
 	if err != nil {
 		log.Fatalf("找不到用户 %q——请确认 -db 指向正在使用的数据库、用户名拼写正确（默认 admin）", *username)
 	}
-	if u.Role != store.RoleSuper {
+	if !store.IsSuperRole(u.Role) {
 		log.Fatalf("用户 %q 不是超级管理员（当前角色 %s），应急重置仅对超管账号开放", *username, u.Role)
 	}
 
@@ -170,8 +170,8 @@ func seedAdminIfNeeded(cfg config.Config, st *store.Store) error {
 	if err != nil {
 		return fmt.Errorf("hash seed password: %w", err)
 	}
-	// 种子账号必须是超级管理员，且首次登录改密，避免默认密码长期可用。
-	if _, err := st.CreateUser(ctx, cfg.AdminUser, hash, "管理员", store.RoleSuper, true); err != nil {
+	// 种子账号必须是最高管理员（root），且首次登录改密，避免默认密码长期可用。
+	if _, err := st.CreateUser(ctx, cfg.AdminUser, hash, "管理员", store.RoleRoot, true); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
 

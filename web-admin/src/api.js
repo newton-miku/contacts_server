@@ -86,6 +86,26 @@ export async function importCSV(file) {
   return data
 }
 
+// ---- 激活码（super/root 全部；unit 仅本单位且不能设单点授权）----
+export const listActivationCodes = (params = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  return api('GET', `/api/activation-codes?${qs.toString()}`)
+}
+export const createActivationCodes = (payload) => api('POST', '/api/activation-codes', payload)
+export const revokeActivationCode = (id) => api('POST', `/api/activation-codes/${id}/revoke`)
+export function exportActivationCodesCSV() {
+  window.location.href = '/api/activation-codes/export'
+}
+
+// ---- 系统设置（仅 root）----
+export const getSettings = () => api('GET', '/api/admin/settings')
+export const updateSettings = (payload) => api('PUT', '/api/admin/settings', payload)
+
+// ---- 可见性授权（super/root）：隐藏组/成员对某用户可见 ----
+export const getUserVisibility = (id) => api('GET', `/api/admin/users/${id}/visibility`)
+export const updateUserVisibility = (id, payload) => api('PUT', `/api/admin/users/${id}/visibility`, payload)
+
 export function fmtTime(iso) {
   if (!iso) return '–'
   const d = new Date(iso)

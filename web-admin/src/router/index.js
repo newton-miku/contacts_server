@@ -18,6 +18,8 @@ const routes = [
       { path: 'duplicates', name: 'duplicates', component: () => import('../views/DuplicatesView.vue'), meta: { title: '号码查重' } },
       { path: 'units', name: 'units', component: () => import('../views/UnitsView.vue'), meta: { title: '单位管理', role: 'super' } },
       { path: 'admins', name: 'admins', component: () => import('../views/AdminsView.vue'), meta: { title: '管理员管理', role: 'super' } },
+      { path: 'activation-codes', name: 'activation-codes', component: () => import('../views/ActivationCodesView.vue'), meta: { title: '激活码' } },
+      { path: 'visibility', name: 'visibility', component: () => import('../views/VisibilityView.vue'), meta: { title: '可见性配置', role: 'super' } },
       { path: 'logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { title: '系统日志', role: 'super' } },
       { path: 'password', name: 'password', component: () => import('../views/PasswordView.vue'), meta: { title: '修改密码' } },
       { path: 'about', name: 'about', component: () => import('../views/AboutView.vue'), meta: { title: '关于' } },
@@ -45,8 +47,9 @@ router.beforeEach(async (to) => {
   if (session.user.mustChangePassword && to.name !== 'password') {
     return { name: 'password' }
   }
-  // 超管专属页面：单位管理员访问一律回概览。
-  if (to.meta?.role === 'super' && session.user.role !== 'super') {
+  // 全局管理员专属页面（super/root）：单位管理员访问一律回概览。
+  const isGlobalAdmin = ['super', 'root'].includes(session.user.role)
+  if (to.meta?.role === 'super' && !isGlobalAdmin) {
     return { name: 'dashboard' }
   }
   return true

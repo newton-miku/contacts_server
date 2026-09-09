@@ -12,6 +12,7 @@ const (
 	LogCategoryAuth    = "auth"    // 登录/登出/改密
 	LogCategoryAccount = "account" // 管理员账号管理
 	LogCategoryUnit    = "unit"    // 单位维护
+	LogCategoryDevice  = "device"  // 设备激活 / 激活码管理
 )
 
 // Log 一条审计日志。UserID==0 表示匿名/未成功识别的操作（如登录失败）。

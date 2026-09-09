@@ -17,6 +17,7 @@ const categoryOptions = [
   { value: 'auth', label: '登录 / 改密' },
   { value: 'account', label: '管理员账号' },
   { value: 'unit', label: '单位维护' },
+  { value: 'device', label: '设备 / 激活码' },
 ]
 
 const categoryLabel = (c) => categoryOptions.find((o) => o.value === c)?.label || c

@@ -40,7 +40,7 @@ func deref(p *string) string {
 // super → 全部已建单位；unit → 仅其绑定单位。用于把 CSV 单位名映射成 unit_id。
 func (s *Server) allowedUnits(r *http.Request) ([]store.Unit, error) {
 	u := userFrom(r)
-	if u.Role == store.RoleSuper {
+	if store.IsSuperRole(u.Role) {
 		return s.store.ListUnits(r.Context())
 	}
 	return s.store.UserUnits(r.Context(), u.ID)
@@ -165,7 +165,7 @@ func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
 	// 空单位（联系人导入整体在事务内，失败不会残留半截数据），避免留下空单位。
 	var newUnits []store.Unit
 	rollback := func() {}
-	if u.Role == store.RoleSuper && len(missingNames) > 0 {
+	if store.IsSuperRole(u.Role) && len(missingNames) > 0 {
 		resolved, created, err := s.store.EnsureUnits(r.Context(), missingNames)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "自动创建单位失败："+err.Error())

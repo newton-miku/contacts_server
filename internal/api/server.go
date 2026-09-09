@@ -92,10 +92,14 @@ func NewServer(st *store.Store, static fs.FS) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// ---- 公开读（客户端匿名全量；登录后按角色过滤）----
+	// ---- 公开读（仅健康检查与版本；联系人必须带令牌）----
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/version", s.handleGetVersion)
-	mux.HandleFunc("GET /api/contacts", s.handleListContacts)
+	mux.HandleFunc("GET /api/contacts", s.withAuth(s.handleListContacts))
+
+	// ---- 设备激活（公开：用一次性激活码换取长期设备令牌）----
+	mux.HandleFunc("POST /api/device/activate", s.handleDeviceActivate)
+	mux.HandleFunc("GET /api/device/me", s.withAuth(s.handleDeviceMe))
 
 	// ---- 身份 ----
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -118,11 +122,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/contacts/import", s.withStaff(s.handleImportContacts))
 	mux.HandleFunc("GET /api/duplicates", s.withStaff(s.handleDuplicates))
 
-	// ---- 管理员账号管理（仅 super）----
+	// ---- 管理员账号管理（super/root）----
 	mux.HandleFunc("GET /api/admin/users", s.withSuper(s.handleListAdminUsers))
 	mux.HandleFunc("POST /api/admin/users", s.withSuper(s.handleCreateAdminUser))
 	mux.HandleFunc("PUT /api/admin/users/{id}", s.withSuper(s.handleUpdateAdminUser))
 	mux.HandleFunc("POST /api/admin/users/{id}/reset-password", s.withSuper(s.handleResetAdminPassword))
+
+	// ---- 可见性授权（super/root）：隐藏组/成员对某用户可见 ----
+	mux.HandleFunc("GET /api/admin/users/{id}/visibility", s.withVisibility(s.handleGetVisibility))
+	mux.HandleFunc("PUT /api/admin/users/{id}/visibility", s.withVisibility(s.handleUpdateVisibility))
+
+	// ---- 激活码管理（super/root 全部；unit 仅本单位且不能设单点授权）----
+	mux.HandleFunc("GET /api/activation-codes", s.withStaff(s.handleListActivationCodes))
+	mux.HandleFunc("POST /api/activation-codes", s.withStaff(s.handleCreateActivationCodes))
+	mux.HandleFunc("POST /api/activation-codes/{id}/revoke", s.withStaff(s.handleRevokeActivationCode))
+	mux.HandleFunc("GET /api/activation-codes/export", s.withStaff(s.handleExportActivationCodes))
+
+	// ---- 系统设置（仅 root）----
+	mux.HandleFunc("GET /api/admin/settings", s.withRoot(s.handleGetSettings))
+	mux.HandleFunc("PUT /api/admin/settings", s.withRoot(s.handleUpdateSettings))
 
 	// ---- 目录数据运维（仅 super）：清空旧数据后整本导入 ----
 	mux.HandleFunc("POST /api/admin/clear-directory", s.withSuper(s.handleClearDirectory))
@@ -297,8 +315,10 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// roleOK 判断该角色能否执行管理操作。
-func roleOK(role string) bool { return role == store.RoleSuper || role == store.RoleUnit }
+// roleOK 判断该角色能否执行管理操作（unit 单位管理员 / super / root）。
+func roleOK(role string) bool {
+	return role == store.RoleSuper || role == store.RoleRoot || role == store.RoleUnit
+}
 
 // withStaff 要求 super 或 unit 登录，并强制“首次登录改密”：
 // 账号仍在用初始/重置密码（must_change_password=1）时，除改密外的管理操作一律拒绝。
@@ -322,7 +342,7 @@ func (s *Server) withStaff(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// withSuper 在 withAuth 基础上要求 super，并强制“首次登录改密”。
+// withSuper 在 withAuth 基础上要求 super 或 root，并强制“首次登录改密”。
 func (s *Server) withSuper(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, err := s.authenticate(r)
@@ -330,7 +350,7 @@ func (s *Server) withSuper(next http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "未登录或会话已过期")
 			return
 		}
-		if u.Role != store.RoleSuper {
+		if !store.IsSuperRole(u.Role) {
 			writeErr(w, http.StatusForbidden, "需要超级管理员权限")
 			return
 		}
@@ -343,12 +363,64 @@ func (s *Server) withSuper(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// withRoot 仅 root（系统最高管理员）：系统设置、创建/修改 root 账号。
+func (s *Server) withRoot(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if u.Role != store.RoleRoot {
+			writeErr(w, http.StatusForbidden, "需要系统最高管理员（root）权限")
+			return
+		}
+		if u.MustChangePassword {
+			writeErr(w, http.StatusForbidden, "请先修改初始密码，再执行该操作")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, u)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// withVisibility 可见性配置（super 或 root）。
+func (s *Server) withVisibility(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if !store.IsSuperRole(u.Role) {
+			writeErr(w, http.StatusForbidden, "需要可见性配置权限（super/root）")
+			return
+		}
+		if u.MustChangePassword {
+			writeErr(w, http.StatusForbidden, "请先修改初始密码，再执行该操作")
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, u)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// authenticate 解析请求令牌：先按账号会话（网页/脚本），再按设备令牌（手机端激活后）。
 func (s *Server) authenticate(r *http.Request) (store.User, error) {
 	raw := s.resolveToken(r)
 	if raw == "" {
 		return store.User{}, auth.ErrUnauthorized
 	}
-	return s.store.UserForSession(r.Context(), auth.TokenHash(raw))
+	hash := auth.TokenHash(raw)
+	if u, err := s.store.UserForSession(r.Context(), hash); err == nil {
+		return u, nil
+	}
+	u, err := s.store.UserForDeviceToken(r.Context(), hash)
+	if err != nil {
+		return store.User{}, auth.ErrUnauthorized
+	}
+	s.store.TouchDevice(r.Context(), hash, clientIP(r))
+	return u, nil
 }
 
 // userFrom 从 context 取当前用户。
@@ -361,7 +433,7 @@ func userFrom(r *http.Request) store.User {
 // unit → 绑定单位 id 列表（没有绑定则为空切片，即“一条也看不到”）。
 func (s *Server) staffUnitIDs(r *http.Request) ([]int64, error) {
 	u := userFrom(r)
-	if u.ID == 0 || u.Role == store.RoleSuper {
+	if u.ID == 0 || store.IsSuperRole(u.Role) {
 		return nil, nil
 	}
 	return s.store.UserUnitIDs(r.Context(), u.ID)
@@ -381,26 +453,37 @@ func (s *Server) authChannel(r *http.Request) string {
 	return ""
 }
 
-// accessUnitIDs 返回 GET /api/contacts 读接口的可见单位集合（可见范围，设计 §3）：
-//   匿名 / super       → nil（全部；匿名公开读本期保留，见设计 §6 过渡）
-//   unit（cookie/网页） → 绑定单位（网页列表不掺入公开单位，写范围=读范围一致）
-//   enduser、unit(bearer/app) → 绑定单位 ∪ 公开单位（手机端可见范围；全为公开单位也放行）
-// 返回空切片 = “一条也看不到”。
-func (s *Server) accessUnitIDs(r *http.Request) ([]int64, error) {
+// accessScope 返回 GET /api/contacts 读接口的可见范围（设计 §3）：
+//   super/root          → 全部
+//   unit（cookie/网页）  → 绑定单位（网页列表不掺入公开单位，写范围=读范围一致）
+//   其余（enduser、unit(bearer/app)、设备令牌）→ 绑定单位 ∪ 公开单位 ∪ 单点授权联系人
+// 返回空范围 = “一条也看不到”。
+func (s *Server) accessScope(r *http.Request) (store.ContactScope, error) {
 	u := userFrom(r)
-	if u.ID == 0 || u.Role == store.RoleSuper {
-		return nil, nil
+	if u.ID == 0 {
+		return store.ContactScope{}, nil
+	}
+	if store.IsSuperRole(u.Role) {
+		return store.ContactScope{All: true}, nil
 	}
 	if u.Role == store.RoleUnit && s.authChannel(r) == "cookie" {
-		return s.store.UserUnitIDs(r.Context(), u.ID)
+		ids, err := s.store.UserUnitIDs(r.Context(), u.ID)
+		if err != nil {
+			return store.ContactScope{}, err
+		}
+		return store.ContactScope{UnitIDs: ids}, nil
 	}
 	bound, err := s.store.UserUnitIDs(r.Context(), u.ID)
 	if err != nil {
-		return nil, err
+		return store.ContactScope{}, err
 	}
 	pub, err := s.store.PublicUnitIDs(r.Context())
 	if err != nil {
-		return nil, err
+		return store.ContactScope{}, err
+	}
+	grants, err := s.store.UserContactGrantIDs(r.Context(), u.ID)
+	if err != nil {
+		return store.ContactScope{}, err
 	}
 	seen := make(map[int64]bool, len(bound)+len(pub))
 	out := make([]int64, 0, len(bound)+len(pub))
@@ -411,13 +494,13 @@ func (s *Server) accessUnitIDs(r *http.Request) ([]int64, error) {
 		seen[id] = true
 		out = append(out, id)
 	}
-	return out, nil
+	return store.ContactScope{UnitIDs: out, ContactIDs: grants}, nil
 }
 
 // managesUnit 判断当前登录管理员是否被允许管理该单位（super 恒 true）。
 func (s *Server) managesUnit(r *http.Request, unitID int64) (bool, error) {
 	u := userFrom(r)
-	if u.ID == 0 || u.Role == store.RoleSuper {
+	if u.ID == 0 || store.IsSuperRole(u.Role) {
 		return true, nil
 	}
 	units, err := s.store.UserUnits(r.Context(), u.ID)

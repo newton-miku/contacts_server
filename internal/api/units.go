@@ -29,7 +29,7 @@ func (s *Server) handleListUnits(w http.ResponseWriter, r *http.Request) {
 		unitIDs []int64
 		err     error
 	)
-	if u.Role == store.RoleSuper {
+	if store.IsSuperRole(u.Role) {
 		units, err = s.store.ListUnits(r.Context())
 		unitIDs = nil // 统计全部
 	} else {
