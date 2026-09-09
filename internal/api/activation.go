@@ -442,12 +442,17 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	defPw, _ := s.store.DefaultAccountPassword(r.Context())
 	retention, _ := s.store.ActivationCodeRetentionDays(r.Context())
 	logRetention, _ := s.store.LogRetentionDays(r.Context())
+	mt, _ := s.store.MaintenanceTime(r.Context())
+	autoVac, _ := s.store.AutoVacuumEnabled(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"activationDailyLimit":     limit,
-		"activationToday":          created,
-		"defaultAccountPassword":   defPw,
-		"codeRetentionDays":        retention,
-		"logRetentionDays":         logRetention,
+		"activationDailyLimit":   limit,
+		"activationToday":        created,
+		"defaultAccountPassword": defPw,
+		"codeRetentionDays":      retention,
+		"logRetentionDays":       logRetention,
+		"maintenanceTime":        mt,
+		"autoVacuum":             autoVac,
+		"dbSizeBytes":            s.store.DBFileSize(),
 	})
 }
 
@@ -457,6 +462,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		DefaultAccountPassword *string `json:"defaultAccountPassword"`
 		CodeRetentionDays      *int    `json:"codeRetentionDays"`
 		LogRetentionDays       *int    `json:"logRetentionDays"`
+		MaintenanceTime        *string `json:"maintenanceTime"`
+		AutoVacuum             *bool   `json:"autoVacuum"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -505,6 +512,25 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		detail += fmt.Sprintf("，日志保留 %d 天", days)
+	}
+	if in.MaintenanceTime != nil {
+		mt := strings.TrimSpace(*in.MaintenanceTime)
+		if !validHHMM(mt) {
+			writeErr(w, http.StatusBadRequest, "维护时间格式应为 HH:MM（如 03:30）")
+			return
+		}
+		if err := s.store.SetMaintenanceTime(r.Context(), mt); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存维护时间失败")
+			return
+		}
+		detail += "，维护时间 " + mt
+	}
+	if in.AutoVacuum != nil {
+		if err := s.store.SetAutoVacuum(r.Context(), *in.AutoVacuum); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存自动整理开关失败")
+			return
+		}
+		detail += fmt.Sprintf("，自动整理=%v", *in.AutoVacuum)
 	}
 	s.logAudit(r, store.LogCategoryAccount, "update_settings", detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "activationDailyLimit": in.ActivationDailyLimit})
@@ -619,4 +645,28 @@ func (s *Server) handleCleanupActivationCodes(w http.ResponseWriter, r *http.Req
 			fmt.Sprintf("清理失效激活码 %d 条（保留 %d 天）", n, days))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n, "retentionDays": days})
+}
+
+// validHHMM 校验 "HH:MM"（00:00~23:59）。
+func validHHMM(s string) bool {
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) == 0 {
+		return false
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	return err1 == nil && err2 == nil && h >= 0 && h < 24 && m >= 0 && m < 60
+}
+
+// handleVacuum 立即整理数据库（VACUUM，root）：把已删除行释放的页归还文件。
+func (s *Server) handleVacuum(w http.ResponseWriter, r *http.Request) {
+	before := s.store.DBFileSize()
+	if err := s.store.Vacuum(r.Context()); err != nil {
+		writeErr(w, http.StatusInternalServerError, "整理失败："+err.Error())
+		return
+	}
+	after := s.store.DBFileSize()
+	s.logAudit(r, store.LogCategoryAccount, "vacuum",
+		fmt.Sprintf("整理数据库：%d → %d 字节", before, after))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "beforeBytes": before, "afterBytes": after})
 }

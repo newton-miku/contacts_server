@@ -14,6 +14,7 @@ import {
   revokeActivationCode,
   cleanupActivationCodes,
   updateSettings,
+  vacuumDatabase,
   importCodesFromContacts,
 } from '../api'
 
@@ -29,6 +30,10 @@ const limitInput = ref(100)
 const defaultPwInput = ref('')
 const retentionInput = ref(30)
 const logRetentionInput = ref(90)
+const maintenanceTime = ref('03:30')
+const autoVacuum = ref(true)
+const dbSize = ref(0)
+const vacuuming = ref(false)
 const cleaning = ref(false)
 const savingLimit = ref(false)
 const statusFilter = ref('')
@@ -150,6 +155,9 @@ async function loadSettings() {
     defaultPwInput.value = s.defaultAccountPassword || ''
     retentionInput.value = s.codeRetentionDays ?? 30
     logRetentionInput.value = s.logRetentionDays ?? 90
+    maintenanceTime.value = s.maintenanceTime || '03:30'
+    autoVacuum.value = s.autoVacuum !== false
+    dbSize.value = s.dbSizeBytes || 0
   } catch (_) {}
 }
 
@@ -279,6 +287,41 @@ async function printPending() {
   setTimeout(() => w.print(), 400)
 }
 
+const fmtBytes = (n) => {
+  if (!n) return '0 B'
+  const u = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < u.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${u[i]}`
+}
+
+// 立即整理数据库：把删除行释放的页归还文件（会短暂锁库）。
+async function onVacuum() {
+  try {
+    await ElMessageBox.confirm(
+      `将整理数据库（当前 ${fmtBytes(dbSize.value)}）。整理会短暂锁库、需要约 2 倍临时磁盘空间，建议在低谷期执行。继续吗？`,
+      '立即整理数据库',
+      { type: 'warning', confirmButtonText: '整理', cancelButtonText: '取消' },
+    )
+  } catch (_) {
+    return
+  }
+  vacuuming.value = true
+  try {
+    const res = await vacuumDatabase()
+    ElMessage.success(`整理完成：${fmtBytes(res.beforeBytes)} → ${fmtBytes(res.afterBytes)}`)
+    await loadSettings()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    vacuuming.value = false
+  }
+}
+
 async function saveSettings() {
   savingLimit.value = true
   try {
@@ -287,6 +330,8 @@ async function saveSettings() {
       defaultAccountPassword: defaultPwInput.value.trim(),
       codeRetentionDays: Number(retentionInput.value),
       logRetentionDays: Number(logRetentionInput.value),
+      maintenanceTime: maintenanceTime.value,
+      autoVacuum: autoVacuum.value,
     })
     dailyLimit.value = res.activationDailyLimit
     ElMessage.success('设置已保存')
@@ -385,6 +430,17 @@ async function saveSettings() {
         <span>系统日志保留天数</span>
         <el-input-number v-model="logRetentionInput" :min="0" :max="3650" />
         <span class="hint">0 = 不自动清理；每天自动清理一次，也可在「系统日志」页手动清理</span>
+      </div>
+      <div class="limit-row" style="margin-top: 10px">
+        <span>每日维护时间</span>
+        <el-input v-model="maintenanceTime" placeholder="03:30" style="width: 100px" />
+        <el-switch v-model="autoVacuum" active-text="清理后自动整理数据库" />
+        <span class="hint">低谷期自动执行清理（激活码/日志），有删除时再整理数据库</span>
+      </div>
+      <div class="limit-row" style="margin-top: 10px">
+        <span>数据库大小</span>
+        <span class="hint" style="margin-left: 0">{{ fmtBytes(dbSize) }}</span>
+        <el-button size="small" :loading="vacuuming" @click="onVacuum">立即整理数据库</el-button>
       </div>
       <div class="limit-row" style="margin-top: 10px">
         <span>单位账号默认密码</span>

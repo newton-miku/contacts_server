@@ -149,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	// ---- 系统设置（仅 root）----
 	mux.HandleFunc("GET /api/admin/settings", s.withRoot(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/admin/settings", s.withRoot(s.handleUpdateSettings))
+	mux.HandleFunc("POST /api/admin/vacuum", s.withRoot(s.handleVacuum))
 
 	// ---- 目录数据运维（仅 super）：清空旧数据后整本导入 ----
 	mux.HandleFunc("POST /api/admin/clear-directory", s.withSuper(s.handleClearDirectory))

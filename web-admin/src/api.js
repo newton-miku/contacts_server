@@ -111,6 +111,8 @@ export function exportActivationCodesCSV() {
 // ---- 系统设置（仅 root）----
 export const getSettings = () => api('GET', '/api/admin/settings')
 export const updateSettings = (payload) => api('PUT', '/api/admin/settings', payload)
+// 立即整理数据库（VACUUM，root）：把已删除行释放的空间归还文件
+export const vacuumDatabase = () => api('POST', '/api/admin/vacuum')
 
 // ---- 可见性授权（super/root）：隐藏组/成员对某用户可见 ----
 export const getUserVisibility = (id) => api('GET', `/api/admin/users/${id}/visibility`)

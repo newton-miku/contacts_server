@@ -12,7 +12,8 @@ import (
 // Store 封装 SQLite 访问。所有联系人写操作都通过 bumpVersion 在同一事务内
 // 递增数据版本号，从而让客户端只需比较版本即可决定是否重新拉取。
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string // 数据库文件路径（用于统计文件大小）
 }
 
 // Open 打开（必要时创建）SQLite 数据库并执行迁移。
@@ -26,7 +27,7 @@ func Open(path string) (*Store, error) {
 	// 单连接写路径足够；允许多读。
 	db.SetMaxOpenConns(8)
 
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -237,6 +238,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		"default_account_password":     "Pb@123456", // 单位/办公室账号统一初始密码（root 可改）
 		"activation_code_retention_days": "30",       // 失效激活码保留天数（0=不自动清理）
 		"log_retention_days":             "90",       // 审计日志保留天数（0=不自动清理）
+		"maintenance_time":               "03:30",    // 每日维护（清理+整理）时刻，本地时间 HH:MM
+		"auto_vacuum":                    "1",        // 清理后自动 VACUUM（1/0）
 	}
 	for k, v := range defaults {
 		if _, err := s.db.ExecContext(ctx,

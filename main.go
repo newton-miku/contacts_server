@@ -22,6 +22,7 @@ import (
 )
 
 // all:web —— embed 默认会跳过 _/. 开头的文件，Vite 产物里恰好有 _plugin-vue_*.js
+//
 //go:embed all:web
 var webFS embed.FS
 
@@ -73,21 +74,22 @@ func run(cfg config.Config) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// 定时清理：失效激活码 + 过期审计日志；启动时跑一次，之后每 24 小时一次（保留天数 root 可配，0 = 关闭）。
+	// 每日维护：到点清理失效激活码 + 过期日志；若本次有删除且开启自动整理，则 VACUUM 归还磁盘。
+	// 维护时刻由 root 在系统设置里配置（默认 03:30，本地时间）。
 	go func() {
 		for {
-			days, err := st.ActivationCodeRetentionDays(context.Background())
-			if err == nil && days > 0 {
-				if n, err := st.CleanupActivationCodes(context.Background(), days); err == nil && n > 0 {
-					log.Printf("已清理失效激活码 %d 条（保留 %d 天）", n, days)
-				}
+			ctx := context.Background()
+			hhmm, err := st.MaintenanceTime(ctx)
+			if err != nil {
+				hhmm = "03:30"
 			}
-			if days, err := st.LogRetentionDays(context.Background()); err == nil && days > 0 {
-				if n, err := st.CleanupLogs(context.Background(), days); err == nil && n > 0 {
-					log.Printf("已清理审计日志 %d 条（保留 %d 天）", n, days)
-				}
+			d := time.Until(store.NextMaintenanceAt(hhmm, time.Now()))
+			if d < time.Minute {
+				d = time.Minute
 			}
-			time.Sleep(24 * time.Hour)
+			log.Printf("下次自动维护：%s", time.Now().Add(d).Format("2006-01-02 15:04"))
+			time.Sleep(d)
+			runMaintenance(st)
 		}
 	}()
 
@@ -200,4 +202,35 @@ func seedAdminIfNeeded(cfg config.Config, st *store.Store) error {
 	fmt.Fprintf(os.Stderr, " 首次登录管理页时会被要求修改该密码。\n")
 	fmt.Fprintln(os.Stderr, "================================================================")
 	return nil
+}
+
+// runMaintenance 执行一次维护：清理失效激活码与过期日志，必要时整理数据库。
+func runMaintenance(st *store.Store) {
+	ctx := context.Background()
+	var deleted int64
+	if days, err := st.ActivationCodeRetentionDays(ctx); err == nil && days > 0 {
+		if n, err := st.CleanupActivationCodes(ctx, days); err == nil && n > 0 {
+			log.Printf("已清理失效激活码 %d 条（保留 %d 天）", n, days)
+			deleted += n
+		}
+	}
+	if days, err := st.LogRetentionDays(ctx); err == nil && days > 0 {
+		if n, err := st.CleanupLogs(ctx, days); err == nil && n > 0 {
+			log.Printf("已清理审计日志 %d 条（保留 %d 天）", n, days)
+			deleted += n
+		}
+	}
+	if deleted == 0 {
+		return
+	}
+	on, err := st.AutoVacuumEnabled(ctx)
+	if err != nil || !on {
+		return
+	}
+	before := st.DBFileSize()
+	if err := st.Vacuum(ctx); err != nil {
+		log.Printf("数据库整理失败：%v", err)
+		return
+	}
+	log.Printf("数据库整理完成：%d → %d 字节（本次清理 %d 条）", before, st.DBFileSize(), deleted)
 }
