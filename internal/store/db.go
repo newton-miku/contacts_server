@@ -233,7 +233,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		"schema_version":         "9",
 		"data_version":           "0",
 		"data_updated_at":        time.Now().UTC().Format(time.RFC3339),
-		"activation_daily_limit": "100", // 每日可生成的激活码上限（root 可改）
+		"activation_daily_limit":    "100",       // 每日可生成的激活码上限（root 可改）
+		"default_account_password": "Pb@123456", // 单位/办公室账号统一初始密码（root 可改）
 	}
 	for k, v := range defaults {
 		if _, err := s.db.ExecContext(ctx,

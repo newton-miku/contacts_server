@@ -439,15 +439,18 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, _ := s.store.ActivationQuotaToday(r.Context())
+	defPw, _ := s.store.DefaultAccountPassword(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"activationDailyLimit": limit,
-		"activationToday":      created,
+		"activationDailyLimit":   limit,
+		"activationToday":        created,
+		"defaultAccountPassword": defPw,
 	})
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		ActivationDailyLimit int `json:"activationDailyLimit"`
+		ActivationDailyLimit   int     `json:"activationDailyLimit"`
+		DefaultAccountPassword *string `json:"defaultAccountPassword"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -460,8 +463,20 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "保存设置失败")
 		return
 	}
-	s.logAudit(r, store.LogCategoryAccount, "update_settings",
-		fmt.Sprintf("调整每日激活码上限为 %d", in.ActivationDailyLimit))
+	detail := fmt.Sprintf("调整每日激活码上限为 %d", in.ActivationDailyLimit)
+	if in.DefaultAccountPassword != nil && *in.DefaultAccountPassword != "" {
+		pw := strings.TrimSpace(*in.DefaultAccountPassword)
+		if len(pw) < 6 {
+			writeErr(w, http.StatusBadRequest, "默认密码至少 6 位")
+			return
+		}
+		if err := s.store.SetDefaultAccountPassword(r.Context(), pw); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存默认密码失败")
+			return
+		}
+		detail += "，并更新了默认账号密码"
+	}
+	s.logAudit(r, store.LogCategoryAccount, "update_settings", detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "activationDailyLimit": in.ActivationDailyLimit})
 }
 

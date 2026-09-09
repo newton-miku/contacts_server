@@ -25,6 +25,7 @@ const loading = ref(false)
 const dailyLimit = ref(100)
 const todayCreated = ref(0)
 const limitInput = ref(100)
+const defaultPwInput = ref('')
 const savingLimit = ref(false)
 const statusFilter = ref('')
 
@@ -142,6 +143,7 @@ async function loadSettings() {
     dailyLimit.value = s.activationDailyLimit
     todayCreated.value = s.activationToday
     limitInput.value = s.activationDailyLimit
+    defaultPwInput.value = s.defaultAccountPassword || ''
   } catch (_) {}
 }
 
@@ -247,12 +249,15 @@ async function printPending() {
   setTimeout(() => w.print(), 400)
 }
 
-async function saveLimit() {
+async function saveSettings() {
   savingLimit.value = true
   try {
-    const res = await updateSettings({ activationDailyLimit: Number(limitInput.value) })
+    const res = await updateSettings({
+      activationDailyLimit: Number(limitInput.value),
+      defaultAccountPassword: defaultPwInput.value.trim(),
+    })
     dailyLimit.value = res.activationDailyLimit
-    ElMessage.success(`每日上限已设为 ${res.activationDailyLimit}`)
+    ElMessage.success('设置已保存')
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -336,8 +341,13 @@ async function saveLimit() {
       <div class="limit-row">
         <span>每日激活码上限</span>
         <el-input-number v-model="limitInput" :min="1" :max="10000" />
-        <el-button type="primary" plain :loading="savingLimit" @click="saveLimit">保存</el-button>
-        <span class="hint">今日已生成 {{ todayCreated }} 个</span>
+        <span class="hint">今日已用 {{ todayCreated }} 个（含座机账号）</span>
+      </div>
+      <div class="limit-row" style="margin-top: 10px">
+        <span>单位账号默认密码</span>
+        <el-input v-model="defaultPwInput" placeholder="至少 6 位" style="width: 220px" />
+        <el-button type="primary" plain :loading="savingLimit" @click="saveSettings">保存</el-button>
+        <span class="hint">从通讯录导入创建的办公室/值班室账号用它作初始密码，首次登录强制修改</span>
       </div>
     </el-card>
 
@@ -402,14 +412,14 @@ async function saveLimit() {
           <span class="hint">天</span>
         </el-form-item>
         <el-form-item label="座机账号密码">
-          <el-input v-model="importForm.initialPassword" placeholder="留空 = 每个账号随机生成（结果里显示一次）" style="max-width: 340px" />
+          <el-input v-model="importForm.initialPassword" placeholder="留空 = 用系统默认密码（见下方「系统设置」）" style="max-width: 340px" />
         </el-form-item>
       </el-form>
       <el-alert
         type="info"
         :closable="false"
         show-icon
-        title="手机号联系人 → 一次性激活码（App 输码激活）；只有座机的联系人 → 账号密码登录账号（桌面端使用）。两者都占用每日额度。"
+        title="手机号联系人 → 一次性激活码（App 输码激活）；只有座机且名称含「办公室/值班室」的联系人 → 桌面端账号密码账号（初始密码用系统默认，首登强制改）。两者都占用每日额度。"
       />
       <div v-if="importResult" class="import-result">
         <el-divider />

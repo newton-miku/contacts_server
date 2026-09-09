@@ -295,6 +295,11 @@ func (s *Server) handleImportCodesFromContacts(w http.ResponseWriter, r *http.Re
 				CreatedBy:   me.ID,
 			})
 		case landline != "":
+			name := strings.TrimSpace(c.DisplayName)
+			if !strings.Contains(name, "办公室") && !strings.Contains(name, "值班室") {
+				addSkip(c, landline, "非「办公室/值班室」，不生成账号")
+				continue
+			}
 			if usedPhone[landline] {
 				addSkip(c, landline, "号码重复（同批其他联系人已使用）")
 				continue
@@ -343,19 +348,19 @@ func (s *Server) handleImportCodesFromContacts(w http.ResponseWriter, r *http.Re
 		writeErr(w, http.StatusBadRequest, "初始密码至少 6 位")
 		return
 	}
+	if initPw == "" {
+		// 未指定 → 用系统统一默认密码（root 可在「系统设置」修改）
+		initPw, err = s.store.DefaultAccountPassword(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取默认密码失败")
+			return
+		}
+	}
 
 	// 4) 座机账号（密码登录；首次登录强制改密）
 	createdAccounts := []map[string]any{}
 	for i := range accounts {
 		pw := initPw
-		if pw == "" {
-			raw, err := s.auth.NewToken()
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, "生成密码失败")
-				return
-			}
-			pw = raw[:10]
-		}
 		hash, err := auth.HashPassword(pw)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "无法加密密码")

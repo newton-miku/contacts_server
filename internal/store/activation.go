@@ -286,6 +286,25 @@ func (s *Store) PendingActivationPhones(ctx context.Context) (map[string]bool, e
 	return out, nil
 }
 
+// ---- 默认账号密码（单位/办公室账号统一初始密码，root 可改）----
+
+// DefaultAccountPassword 返回新账号的默认初始密码（meta 配置；未配置时用内置默认值）。
+func (s *Store) DefaultAccountPassword(ctx context.Context) (string, error) {
+	v, err := s.metaGet(ctx, "default_account_password")
+	if err != nil {
+		return "", err
+	}
+	if v == "" {
+		return "Pb@123456", nil
+	}
+	return v, nil
+}
+
+// SetDefaultAccountPassword 设置默认初始密码（root）。
+func (s *Store) SetDefaultAccountPassword(ctx context.Context, pw string) error {
+	return s.metaSet(ctx, s.db, "default_account_password", pw)
+}
+
 // ---- 每日额度（激活码 + 座机账号统一计数）----
 
 func activationQuotaDate() string { return time.Now().Format("2006-01-02") }
