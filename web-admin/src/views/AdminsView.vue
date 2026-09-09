@@ -2,8 +2,15 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Key } from '@element-plus/icons-vue'
-import { listAdminUsers, createAdminUser, updateAdminUser, resetAdminPassword, deleteAdminUser, listUnits } from '../api'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import {
+  listAdminUsers,
+  createAdminUser,
+  updateAdminUser,
+  resetAdminPassword,
+  deleteAdminUser,
+  listUnits,
+} from '../api'
 import { session } from '../stores/session'
 
 const router = useRouter()
@@ -12,6 +19,15 @@ const isRoot = computed(() => session.user?.role === 'root')
 const rows = ref([])
 const units = ref([]) // 全部单位（超管维护管理员用）
 const loading = ref(false)
+const activeTab = ref('admin') // admin=管理员管理；user=用户管理
+
+// ---- 过滤条件 ----
+const kw = ref('')
+const adminRole = ref('')
+const statusFilter = ref('')
+const pwdFilter = ref('')
+
+// ---- 新建/编辑对话框 ----
 const dialogVisible = ref(false)
 const saving = ref(false)
 const editing = ref(null) // null → 新增
@@ -26,8 +42,10 @@ const form = reactive({
 })
 
 const isSelf = (row) => session.user?.id === row.id
-const roleName = (r) => ({ root: '系统管理员', super: '超级管理员', unit: '单位管理员', enduser: '只读用户' })[r] || r
-const roleTag = (r) => ({ root: 'danger', super: 'warning', unit: 'primary', enduser: 'success' })[r] || 'info'
+const roleName = (r) =>
+  ({ root: '系统管理员', super: '超级管理员', unit: '单位管理员', enduser: '终端用户' })[r] || r
+const roleTag = (r) =>
+  ({ root: 'danger', super: 'warning', unit: 'primary', enduser: 'success' })[r] || 'info'
 const goVisibility = () => router.push('/visibility')
 
 async function load() {
@@ -44,9 +62,53 @@ async function load() {
 }
 onMounted(load)
 
+// ---- 分组与过滤 ----
+const admins = computed(() => rows.value.filter((r) => r.role !== 'enduser'))
+const endusers = computed(() => rows.value.filter((r) => r.role === 'enduser'))
+
+const matchKeyword = (r) => {
+  const k = kw.value.trim().toLowerCase()
+  if (!k) return true
+  return [r.username, r.displayName, ...(r.unitNames || [])].some((v) =>
+    String(v ?? '').toLowerCase().includes(k),
+  )
+}
+const matchStatus = (r) =>
+  statusFilter.value === '' ||
+  (statusFilter.value === 'active' ? r.isActive : !r.isActive)
+const matchPassword = (r) =>
+  pwdFilter.value === '' ||
+  (pwdFilter.value === 'set' ? r.hasPassword !== false : r.hasPassword === false)
+
+const filteredAdmins = computed(() =>
+  admins.value.filter(
+    (r) =>
+      matchKeyword(r) &&
+      matchStatus(r) &&
+      (adminRole.value === '' || r.role === adminRole.value),
+  ),
+)
+const filteredUsers = computed(() =>
+  endusers.value.filter((r) => matchKeyword(r) && matchStatus(r) && matchPassword(r)),
+)
+
+function resetFilters() {
+  kw.value = ''
+  adminRole.value = ''
+  statusFilter.value = ''
+  pwdFilter.value = ''
+}
+
 function openCreate() {
   editing.value = null
-  Object.assign(form, { username: '', displayName: '', password: '', role: 'unit', isActive: true, unitIds: [] })
+  Object.assign(form, {
+    username: '',
+    displayName: '',
+    password: '',
+    role: activeTab.value === 'user' ? 'enduser' : 'unit',
+    isActive: true,
+    unitIds: [],
+  })
   dialogVisible.value = true
   formRef.value?.clearValidate()
 }
@@ -80,7 +142,7 @@ const rules = {
     : [
         {
           validator: (_r, v, cb) => {
-            if (form.role === 'enduser') return cb() // 只读用户可留空 = 暂不设置密码
+            if (form.role === 'enduser') return cb() // 终端用户可留空 = 暂不设置密码
             if (!v) return cb(new Error('请输入初始密码'))
             if (String(v).length < 6) return cb(new Error('初始密码至少 6 位'))
             cb()
@@ -91,7 +153,8 @@ const rules = {
   unitIds: [
     {
       validator: (_r, v, cb) => {
-        if (form.role === 'unit' && (!v || v.length === 0)) return cb(new Error('单位管理员至少绑定一个单位'))
+        if (form.role === 'unit' && (!v || v.length === 0))
+          return cb(new Error('单位管理员至少绑定一个单位'))
         cb()
       },
       trigger: 'change',
@@ -119,7 +182,9 @@ async function submit() {
       ElMessage.success('已保存账号设置')
     } else {
       await createAdminUser({ ...payload, username: form.username.trim(), password: form.password })
-      ElMessage.success('已创建账号（首次登录需修改初始密码）')
+      ElMessage.success(
+        form.password ? '已创建账号（首次登录需修改初始密码）' : '已创建账号（尚未设置密码）',
+      )
     }
     dialogVisible.value = false
     await load()
@@ -138,10 +203,14 @@ async function onDelete(row) {
   }
   try {
     await ElMessageBox.confirm(
-      `确定删除账号「${row.username}」吗？
-将同时删除其设备绑定、登录令牌、单位绑定与单点授权，且不可恢复。`,
+      `确定删除账号「${row.username}」吗？\n将同时删除其设备绑定、登录令牌、单位绑定与单点授权，且不可恢复。`,
       '删除账号',
-      { type: 'warning', confirmButtonText: '删除', confirmButtonClass: 'el-button--danger', cancelButtonText: '取消' },
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        confirmButtonClass: 'el-button--danger',
+        cancelButtonText: '取消',
+      },
     )
   } catch (_) {
     return
@@ -165,7 +234,13 @@ async function onResetPassword(row) {
     ;({ value: val } = await ElMessageBox.prompt(
       `为「${row.username}」设置新密码。重置后该账号必须修改密码，其所有已登录会话将立即失效。`,
       '重置密码',
-      { inputType: 'password', inputPattern: /^.{6,}$/, inputErrorMessage: '密码至少 6 位', confirmButtonText: '重置', cancelButtonText: '取消' },
+      {
+        inputType: 'password',
+        inputPattern: /^.{6,}$/,
+        inputErrorMessage: '密码至少 6 位',
+        confirmButtonText: '重置',
+        cancelButtonText: '取消',
+      },
     ))
   } catch (_) {
     return
@@ -178,56 +253,158 @@ async function onResetPassword(row) {
     ElMessage.error(e.message)
   }
 }
-
 </script>
 
 <template>
   <div>
-    <div class="toolbar">
-      <div class="tip">超级管理员可创建管理员/只读账号并分配其负责的单位；单位管理员只能看到/修改这些单位的联系人，只读账号仅可在手机端浏览绑定单位与公开单位。</div>
-      <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新建账号</el-button>
-    </div>
+    <el-tabs v-model="activeTab" class="tabs">
+      <!-- ==================== 管理员管理 ==================== -->
+      <el-tab-pane name="admin">
+        <template #label>
+          管理员管理
+          <el-badge :value="admins.length" :max="999" type="info" class="tab-badge" />
+        </template>
 
-    <el-table :data="rows" v-loading="loading" border stripe class="table">
-      <el-table-column prop="username" label="用户名" min-width="120" />
-      <el-table-column prop="displayName" label="显示名" min-width="110">
-        <template #default="{ row }">{{ row.displayName || '—' }}</template>
-      </el-table-column>
-      <el-table-column label="角色" width="120">
-        <template #default="{ row }">
-          <el-tag :type="roleTag(row.role)" effect="light" size="small">{{ roleName(row.role) }}</el-tag>
+        <div class="toolbar">
+          <el-input
+            v-model="kw"
+            placeholder="搜索用户名 / 显示名 / 单位"
+            :prefix-icon="Search"
+            clearable
+            class="search"
+          />
+          <el-select v-model="adminRole" placeholder="全部角色" clearable style="width: 150px">
+            <el-option label="系统管理员（root）" value="root" />
+            <el-option label="超级管理员" value="super" />
+            <el-option label="单位管理员" value="unit" />
+          </el-select>
+          <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 120px">
+            <el-option label="启用" value="active" />
+            <el-option label="停用" value="inactive" />
+          </el-select>
+          <el-button :icon="Refresh" @click="resetFilters">重置</el-button>
+          <div class="spacer" />
+          <el-button type="primary" :icon="Plus" @click="openCreate">新建管理员</el-button>
+        </div>
+
+        <div class="tip">
+          超级管理员可创建管理员账号并分配其负责的单位；单位管理员只能看到/修改这些单位的联系人。
+        </div>
+
+        <el-table :data="filteredAdmins" v-loading="loading" border stripe class="table">
+          <el-table-column prop="username" label="用户名" min-width="120" />
+          <el-table-column prop="displayName" label="显示名" min-width="110">
+            <template #default="{ row }">{{ row.displayName || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="角色" width="130">
+            <template #default="{ row }">
+              <el-tag :type="roleTag(row.role)" effect="light" size="small">{{ roleName(row.role) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="负责单位" min-width="180">
+            <template #default="{ row }">
+              <span v-if="!['super', 'root'].includes(row.role)">{{ (row.unitNames || []).join('、') || '（未绑定）' }}</span>
+              <span v-else class="all">全部</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.isActive ? 'success' : 'info'" effect="plain" size="small">
+                {{ row.isActive ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="密码" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.hasPassword === false" type="info" effect="plain" size="small">未设置</el-tag>
+              <el-tag v-else-if="row.mustChangePassword" type="warning" effect="plain" size="small">待修改</el-tag>
+              <el-tag v-else type="success" effect="plain" size="small">已设置</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="220" align="right">
+            <template #default="{ row }">
+              <el-button v-if="!isSelf(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="!isSelf(row)" link type="warning" @click="onResetPassword(row)">重置密码</el-button>
+              <el-button v-if="!isSelf(row)" link type="danger" @click="onDelete(row)">删除</el-button>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="没有匹配的管理员账号" :image-size="80" />
+          </template>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- ==================== 用户管理（终端用户） ==================== -->
+      <el-tab-pane name="user">
+        <template #label>
+          用户管理
+          <el-badge :value="endusers.length" :max="999" type="info" class="tab-badge" />
         </template>
-      </el-table-column>
-      <el-table-column label="负责单位" min-width="170">
-        <template #default="{ row }">
-          <span v-if="!['super', 'root'].includes(row.role)">{{ (row.unitNames || []).join('、') || '（未绑定）' }}</span>
-          <span v-else class="all">全部</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="90" align="center">
-        <template #default="{ row }">
-          <el-tag :type="row.isActive ? 'success' : 'info'" effect="plain" size="small">
-            {{ row.isActive ? '启用' : '停用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="密码" width="100" align="center">
-        <template #default="{ row }">
-          <el-tag v-if="row.hasPassword === false" type="info" effect="plain" size="small">未设置</el-tag>
-          <el-tag v-else-if="row.mustChangePassword" type="warning" effect="plain" size="small">待修改</el-tag>
-          <el-tag v-else type="success" effect="plain" size="small">已设置</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="300" align="right">
-        <template #default="{ row }">
-          <el-button v-if="!isSelf(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="!isSelf(row)" link type="warning" @click="onResetPassword(row)">重置密码</el-button>
-          <el-button v-if="!['super', 'root'].includes(row.role)" link @click="goVisibility">可见范围</el-button>
-          <el-button v-if="!isSelf(row)" link type="danger" @click="onDelete(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+
+        <div class="toolbar">
+          <el-input
+            v-model="kw"
+            placeholder="搜索手机号 / 姓名 / 可见单位"
+            :prefix-icon="Search"
+            clearable
+            class="search"
+          />
+          <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 120px">
+            <el-option label="启用" value="active" />
+            <el-option label="停用" value="inactive" />
+          </el-select>
+          <el-select v-model="pwdFilter" placeholder="全部密码状态" clearable style="width: 160px">
+            <el-option label="已设置密码" value="set" />
+            <el-option label="未设置密码" value="unset" />
+          </el-select>
+          <el-button :icon="Refresh" @click="resetFilters">重置</el-button>
+          <div class="spacer" />
+          <el-button type="primary" :icon="Plus" @click="openCreate">新建用户</el-button>
+        </div>
+
+        <div class="tip">
+          终端用户仅可在手机端（激活码）或桌面端（账号密码）登录浏览，可见范围 = 绑定单位 ∪ 公开单位；
+          账号可由「激活码」页从通讯录批量导入。
+        </div>
+
+        <el-table :data="filteredUsers" v-loading="loading" border stripe class="table">
+          <el-table-column prop="username" label="账号（手机号/座机）" min-width="150" />
+          <el-table-column prop="displayName" label="姓名" min-width="110">
+            <template #default="{ row }">{{ row.displayName || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="可见单位" min-width="200">
+            <template #default="{ row }">
+              {{ (row.unitNames || []).join('、') || '（仅公开单位）' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.isActive ? 'success' : 'info'" effect="plain" size="small">
+                {{ row.isActive ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="密码" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.hasPassword === false" type="info" effect="plain" size="small">未设置</el-tag>
+              <el-tag v-else-if="row.mustChangePassword" type="warning" effect="plain" size="small">待修改</el-tag>
+              <el-tag v-else type="success" effect="plain" size="small">已设置</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="240" align="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button link type="warning" @click="onResetPassword(row)">重置密码</el-button>
+              <el-button link @click="goVisibility">可见范围</el-button>
+              <el-button link type="danger" @click="onDelete(row)">删除</el-button>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="没有匹配的终端用户" :image-size="80" />
+          </template>
+        </el-table>
+      </el-tab-pane>
+    </el-tabs>
 
     <el-dialog v-model="dialogVisible" :title="title" width="520px" :close-on-click-modal="false">
       <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
@@ -243,19 +420,18 @@ async function onResetPassword(row) {
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item label="角色" prop="role">
+        <el-form-item v-if="activeTab === 'admin'" label="角色" prop="role">
           <el-radio-group v-model="form.role">
             <el-radio v-if="isRoot" value="root">系统管理员</el-radio>
             <el-radio value="super">超级管理员</el-radio>
             <el-radio value="unit">单位管理员</el-radio>
-            <el-radio value="enduser">只读用户</el-radio>
           </el-radio-group>
-          <span v-if="form.role === 'enduser'" class="hint">仅可在手机端登录浏览，不可登录本后台</span>
         </el-form-item>
         <el-form-item v-if="form.role === 'unit' || form.role === 'enduser'" label="负责单位" prop="unitIds">
           <el-select
             v-model="form.unitIds"
             multiple
+            filterable
             :placeholder="form.role === 'unit' ? '可多选（至少一个）' : '可多选（可不选，仅浏览公开单位）'"
             style="width: 100%"
           >
@@ -265,7 +441,7 @@ async function onResetPassword(row) {
         <template v-if="editing">
           <el-form-item label="启用状态" prop="isActive">
             <el-switch v-model="form.isActive" active-text="启用" inactive-text="停用" />
-            <span class="hint">停用后该账号的所有会话将立即失效</span>
+            <span class="hint">停用后该账号的所有会话与设备令牌将立即失效</span>
           </el-form-item>
         </template>
         <el-form-item v-else label="初始密码" prop="password">
@@ -290,8 +466,13 @@ async function onResetPassword(row) {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
-.tip { flex: 1; color: #64748b; font-size: 13px; }
+.tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
+.tab-badge { margin-left: 6px; }
+.tab-badge :deep(.el-badge__content) { transform: translateY(-1px); }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.toolbar .search { width: 280px; }
+.spacer { flex: 1; }
+.tip { color: #64748b; font-size: 13px; margin: 0 0 10px 2px; }
 .table { border-radius: 8px; overflow: hidden; }
 .all { color: #059669; }
 .hint { margin-left: 10px; color: #94a3b8; font-size: 12px; }

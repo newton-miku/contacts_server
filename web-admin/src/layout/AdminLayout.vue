@@ -82,7 +82,7 @@ onMounted(() => {
           </el-menu-item>
           <el-menu-item index="/admins" :disabled="mustChange">
             <el-icon><Avatar /></el-icon>
-            <span>管理员管理</span>
+            <span>账号管理</span>
           </el-menu-item>
           <el-menu-item index="/logs" :disabled="mustChange">
             <el-icon><Tickets /></el-icon>
