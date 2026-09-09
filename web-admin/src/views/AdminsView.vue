@@ -75,7 +75,19 @@ const rules = {
   username: editing.value
     ? {}
     : [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: editing.value ? {} : [{ required: true, message: '请输入初始密码', trigger: 'blur' }],
+  password: editing.value
+    ? {}
+    : [
+        {
+          validator: (_r, v, cb) => {
+            if (form.role === 'enduser') return cb() // 只读用户可留空 = 暂不设置密码
+            if (!v) return cb(new Error('请输入初始密码'))
+            if (String(v).length < 6) return cb(new Error('初始密码至少 6 位'))
+            cb()
+          },
+          trigger: 'blur',
+        },
+      ],
   unitIds: [
     {
       validator: (_r, v, cb) => {
@@ -175,10 +187,11 @@ async function onResetPassword(row) {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="初始密码" width="100" align="center">
+      <el-table-column label="密码" width="100" align="center">
         <template #default="{ row }">
-          <el-tag v-if="row.mustChangePassword" type="warning" effect="plain" size="small">待修改</el-tag>
-          <el-tag v-else type="success" effect="plain" size="small">已改</el-tag>
+          <el-tag v-if="row.hasPassword === false" type="info" effect="plain" size="small">未设置</el-tag>
+          <el-tag v-else-if="row.mustChangePassword" type="warning" effect="plain" size="small">待修改</el-tag>
+          <el-tag v-else type="success" effect="plain" size="small">已设置</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="250" align="right">
@@ -230,7 +243,16 @@ async function onResetPassword(row) {
           </el-form-item>
         </template>
         <el-form-item v-else label="初始密码" prop="password">
-          <el-input v-model="form.password" type="password" show-password maxlength="64" placeholder="至少 6 位（首次登录需修改）" />
+          <el-input
+            v-model="form.password"
+            type="password"
+            show-password
+            maxlength="64"
+            :placeholder="form.role === 'enduser' ? '可留空：暂不设置密码' : '至少 6 位（首次登录需修改）'"
+          />
+          <span v-if="form.role === 'enduser'" class="hint">
+            留空 = 该账号「尚未设置密码」：现在不能密码登录，后续可由管理员重置，或客户端激活后自行设置
+          </span>
         </el-form-item>
       </el-form>
       <template #footer>

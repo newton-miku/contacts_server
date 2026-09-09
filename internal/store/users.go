@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"phonebook-server/internal/auth"
 )
 
 // 账号角色。
@@ -28,6 +30,8 @@ type User struct {
 	Role               string   `json:"role"`
 	IsActive           bool     `json:"isActive"`
 	MustChangePassword bool     `json:"mustChangePassword"`
+	// HasPassword 是否已设置可用密码（激活码创建的账号为 false，需管理员重置后才可密码登录）。
+	HasPassword bool `json:"hasPassword"`
 	CreatedAt          string   `json:"createdAt"`
 	UnitIDs            []int64  `json:"unitIds,omitempty"`
 	UnitNames          []string `json:"unitNames,omitempty"`
@@ -201,7 +205,24 @@ func scanUser(row Scanner) (User, error) {
 	u.DisplayName = displayName.String
 	u.IsActive = isActive == 1
 	u.MustChangePassword = mustChange == 1
+	u.HasPassword = u.PasswordHash != "" && u.PasswordHash != auth.NoPasswordHash
 	return u, nil
+}
+
+// SetUserActive 设置账号启用/停用（停用后其设备令牌与会话立即失效）。
+func (s *Store) SetUserActive(ctx context.Context, id int64, active bool) error {
+	v := 0
+	if active {
+		v = 1
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET is_active = ? WHERE id = ?`, v, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UserUnits 返回账号绑定的单位（含名称），超管返回空集。

@@ -136,6 +136,7 @@ func (s *Server) userPayload(r *http.Request, u store.User) (map[string]any, err
 		"displayName":        u.DisplayName,
 		"role":               u.Role,
 		"mustChangePassword": u.MustChangePassword,
+		"hasPassword":        u.HasPassword,
 	}
 	if u.Role == store.RoleUnit || u.Role == store.RoleEndUser {
 		units, err := s.store.UserUnits(r.Context(), u.ID)

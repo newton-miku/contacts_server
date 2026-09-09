@@ -88,20 +88,12 @@ func (s *Server) handleDeviceActivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 按手机号找/建只读账号（密码为随机不可登录值，仅供内部关联）。
+	// 按手机号找/建只读账号（未设置密码，见下）。
 	u, err := s.store.UserByUsername(r.Context(), phone)
 	if errors.Is(err, store.ErrNotFound) {
-		randomPw, err := s.auth.NewToken()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "激活失败")
-			return
-		}
-		hash, err := auth.HashPassword(randomPw)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "激活失败")
-			return
-		}
-		u, err = s.store.CreateUser(r.Context(), phone, hash, c.DisplayName, c.Role, false)
+		// 密码存哨兵值：激活码账号默认不可用密码登录；将来要支持手机号+密码登录时，
+		// 由管理员重置密码或客户端激活后自行设置。
+		u, err = s.store.CreateUser(r.Context(), phone, auth.NoPasswordHash, c.DisplayName, c.Role, false)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "创建账号失败")
 			return
@@ -111,6 +103,11 @@ func (s *Server) handleDeviceActivate(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if u.Role != store.RoleEndUser {
 		writeErr(w, http.StatusBadRequest, "该手机号已被管理员账号占用，请联系管理员处理")
+		return
+	}
+	// 账号已被管理员停用 → 不允许激活（否则会拿到一个立刻失效的令牌）。
+	if !u.IsActive {
+		writeErr(w, http.StatusBadRequest, "该账号已停用，请联系管理员")
 		return
 	}
 

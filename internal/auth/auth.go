@@ -30,8 +30,16 @@ func HashPassword(password string) (string, error) {
 	return string(b), nil
 }
 
+// NoPasswordHash 表示账号「尚未设置密码」（不可用密码登录）。
+// 用哨兵值而非空串：便于界面区分「未设置」与「已设置」，也避免空哈希被误匹配。
+const NoPasswordHash = "!"
+
 // CheckPassword 校验明文密码与哈希是否匹配。
+// 未设置密码（空串/哨兵值）一律不通过；bcrypt 对非法哈希本来也会失败，这里显式拦一层。
 func CheckPassword(hash, password string) bool {
+	if hash == "" || hash == NoPasswordHash {
+		return false
+	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 

@@ -33,6 +33,7 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		DisplayName string  `json:"displayName"`
 		Role        string  `json:"role"`
 		UnitIDs     []int64 `json:"unitIds"`
+		IsActive    *bool   `json:"isActive"` // 可选：新建即停用（默认启用）
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -44,8 +45,15 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "用户名需为 3~32 位字母/数字/_/./-")
 		return
 	}
-	if len(in.Password) < 6 {
+	// 密码：只读用户可留空（= 尚未设置密码，后续由管理员重置或客户端自行设置）；
+	// 其它管理角色必须给初始密码。
+	if in.Password != "" && len(in.Password) < 6 {
 		writeErr(w, http.StatusBadRequest, "初始密码至少 6 位")
+		return
+	}
+	if in.Password == "" &&
+		(in.Role == store.RoleRoot || in.Role == store.RoleSuper || in.Role == store.RoleUnit) {
+		writeErr(w, http.StatusBadRequest, "请设置初始密码（至少 6 位）")
 		return
 	}
 	switch in.Role {
@@ -89,12 +97,19 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := auth.HashPassword(in.Password)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "无法加密密码")
-		return
+	// 未填密码 → 存哨兵值（不可登录）；填了 → bcrypt 哈希并标记首登改密。
+	passwordHash := auth.NoPasswordHash
+	mustChange := false
+	if in.Password != "" {
+		h, err := auth.HashPassword(in.Password)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "无法加密密码")
+			return
+		}
+		passwordHash = h
+		mustChange = true
 	}
-	u, err := s.store.CreateUser(r.Context(), in.Username, hash, in.DisplayName, in.Role, true)
+	u, err := s.store.CreateUser(r.Context(), in.Username, passwordHash, in.DisplayName, in.Role, mustChange)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "创建账号失败")
 		return
@@ -110,7 +125,17 @@ func (s *Server) handleCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.logAudit(r, store.LogCategoryAccount, "create_user", "新建账号 "+in.Username+"（角色 "+roleLabel(in.Role)+"）")
+	// 新建即可停用（前端传 isActive=false 时）。
+	if in.IsActive != nil && !*in.IsActive {
+		if err := s.store.SetUserActive(r.Context(), u.ID, false); err != nil {
+			writeErr(w, http.StatusInternalServerError, "设置启用状态失败")
+			return
+		}
+		u.IsActive = false
+	}
+	s.logAudit(r, store.LogCategoryAccount, "create_user",
+		"新建账号 "+in.Username+"（角色 "+roleLabel(in.Role)+"，密码"+
+			map[bool]string{true: "已设置", false: "未设置"}[in.Password != ""]+"）")
 	writeJSON(w, http.StatusCreated, u)
 }
 
