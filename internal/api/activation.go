@@ -441,11 +441,13 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	created, _ := s.store.ActivationQuotaToday(r.Context())
 	defPw, _ := s.store.DefaultAccountPassword(r.Context())
 	retention, _ := s.store.ActivationCodeRetentionDays(r.Context())
+	logRetention, _ := s.store.LogRetentionDays(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"activationDailyLimit":     limit,
 		"activationToday":          created,
 		"defaultAccountPassword":   defPw,
 		"codeRetentionDays":        retention,
+		"logRetentionDays":         logRetention,
 	})
 }
 
@@ -454,6 +456,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ActivationDailyLimit   int     `json:"activationDailyLimit"`
 		DefaultAccountPassword *string `json:"defaultAccountPassword"`
 		CodeRetentionDays      *int    `json:"codeRetentionDays"`
+		LogRetentionDays       *int    `json:"logRetentionDays"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -490,6 +493,18 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		detail += fmt.Sprintf("，激活码保留 %d 天", days)
+	}
+	if in.LogRetentionDays != nil {
+		days := *in.LogRetentionDays
+		if days < 0 || days > 3650 {
+			writeErr(w, http.StatusBadRequest, "日志保留天数需在 0~3650 之间（0 = 不自动清理）")
+			return
+		}
+		if err := s.store.SetLogRetentionDays(r.Context(), days); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存日志保留天数失败")
+			return
+		}
+		detail += fmt.Sprintf("，日志保留 %d 天", days)
 	}
 	s.logAudit(r, store.LogCategoryAccount, "update_settings", detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "activationDailyLimit": in.ActivationDailyLimit})

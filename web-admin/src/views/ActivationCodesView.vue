@@ -28,6 +28,7 @@ const todayCreated = ref(0)
 const limitInput = ref(100)
 const defaultPwInput = ref('')
 const retentionInput = ref(30)
+const logRetentionInput = ref(90)
 const cleaning = ref(false)
 const savingLimit = ref(false)
 const statusFilter = ref('')
@@ -148,6 +149,7 @@ async function loadSettings() {
     limitInput.value = s.activationDailyLimit
     defaultPwInput.value = s.defaultAccountPassword || ''
     retentionInput.value = s.codeRetentionDays ?? 30
+    logRetentionInput.value = s.logRetentionDays ?? 90
   } catch (_) {}
 }
 
@@ -284,6 +286,7 @@ async function saveSettings() {
       activationDailyLimit: Number(limitInput.value),
       defaultAccountPassword: defaultPwInput.value.trim(),
       codeRetentionDays: Number(retentionInput.value),
+      logRetentionDays: Number(logRetentionInput.value),
     })
     dailyLimit.value = res.activationDailyLimit
     ElMessage.success('设置已保存')
@@ -377,6 +380,11 @@ async function saveSettings() {
         <span>失效码保留天数</span>
         <el-input-number v-model="retentionInput" :min="0" :max="3650" />
         <span class="hint">0 = 不自动清理；每天自动清理一次，也可用上方「清理已失效」手动执行</span>
+      </div>
+      <div class="limit-row" style="margin-top: 10px">
+        <span>系统日志保留天数</span>
+        <el-input-number v-model="logRetentionInput" :min="0" :max="3650" />
+        <span class="hint">0 = 不自动清理；每天自动清理一次，也可在「系统日志」页手动清理</span>
       </div>
       <div class="limit-row" style="margin-top: 10px">
         <span>单位账号默认密码</span>

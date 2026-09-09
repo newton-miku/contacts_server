@@ -236,6 +236,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		"activation_daily_limit":    "100",       // 每日可生成的激活码上限（root 可改）
 		"default_account_password":     "Pb@123456", // 单位/办公室账号统一初始密码（root 可改）
 		"activation_code_retention_days": "30",       // 失效激活码保留天数（0=不自动清理）
+		"log_retention_days":             "90",       // 审计日志保留天数（0=不自动清理）
 	}
 	for k, v := range defaults {
 		if _, err := s.db.ExecContext(ctx,

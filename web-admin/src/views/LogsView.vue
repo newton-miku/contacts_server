@@ -1,13 +1,14 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Search, Refresh } from '@element-plus/icons-vue'
-import { queryLogs, fmtTime } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Search, Refresh, Delete } from '@element-plus/icons-vue'
+import { queryLogs, cleanupLogs, fmtTime } from '../api'
 
 const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
 const filters = reactive({ category: '', user: '', from: '', to: '' })
+const cleaning = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
 
@@ -45,6 +46,29 @@ async function load() {
     ElMessage.error(`读取日志失败：${e.message}`)
   } finally {
     loading.value = false
+  }
+}
+
+// 清理早于保留期的审计日志（保留天数在「激活码」页的系统设置里配置）。
+async function onCleanup() {
+  try {
+    await ElMessageBox.confirm(
+      '将删除早于「日志保留天数」的审计日志（保留天数在「激活码」页的系统设置里调整）。删除后不可恢复。',
+      '清理旧日志',
+      { type: 'warning', confirmButtonText: '清理', cancelButtonText: '取消' },
+    )
+  } catch (_) {
+    return
+  }
+  cleaning.value = true
+  try {
+    const res = await cleanupLogs({})
+    ElMessage.success(`已清理 ${res.deleted} 条日志（保留 ${res.retentionDays} 天）`)
+    search()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    cleaning.value = false
   }
 }
 
@@ -86,6 +110,7 @@ onMounted(load)
       />
       <el-button type="primary" :icon="Search" @click="search">查询</el-button>
       <el-button :icon="Refresh" @click="reset">重置</el-button>
+      <el-button :icon="Delete" :loading="cleaning" @click="onCleanup">清理旧日志</el-button>
     </div>
 
     <div class="summary">共 <b>{{ total }}</b> 条日志</div>

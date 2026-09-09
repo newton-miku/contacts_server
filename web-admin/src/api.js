@@ -57,6 +57,9 @@ export const queryLogs = (params = {}) => {
 // ---- 目录数据运维（仅 super）：清空旧数据，供整本重新导入前清场 ----
 export const clearDirectory = () => api('POST', '/api/admin/clear-directory')
 
+// ---- 审计日志清理（super/root）：删除早于保留期的日志 ----
+export const cleanupLogs = (payload = {}) => api('POST', '/api/logs/cleanup', payload)
+
 // ---- 号码查重（super 全库 / unit 仅其绑定单位）----
 export const fetchDuplicates = () => api('GET', '/api/duplicates')
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -137,4 +138,38 @@ func expandTimeRangeEnd(v string) string {
 		return t.Add(24 * time.Hour).UTC().Format("2006-01-02") + "T00:00:00Z"
 	}
 	return v
+}
+
+// LogRetentionDays 返回审计日志保留天数（meta 配置，默认 90；0 = 不自动清理）。
+func (s *Store) LogRetentionDays(ctx context.Context) (int, error) {
+	v, err := s.metaGet(ctx, "log_retention_days")
+	if err != nil {
+		return 0, err
+	}
+	if v == "" {
+		return 90, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 90, nil
+	}
+	return n, nil
+}
+
+// SetLogRetentionDays 设置日志保留天数（root；0 = 关闭自动清理）。
+func (s *Store) SetLogRetentionDays(ctx context.Context, n int) error {
+	return s.metaSet(ctx, s.db, "log_retention_days", strconv.Itoa(n))
+}
+
+// CleanupLogs 删除早于保留期的审计日志，返回删除行数；days<=0 时不做任何事。
+func (s *Store) CleanupLogs(ctx context.Context, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

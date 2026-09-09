@@ -155,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 
 	// ---- 系统日志（仅 super）----
 	mux.HandleFunc("GET /api/logs", s.withSuper(s.handleQueryLogs))
+	mux.HandleFunc("POST /api/logs/cleanup", s.withSuper(s.handleCleanupLogs))
 
 	// ---- 管理页静态资源 ----
 	if s.WebFS != nil {
