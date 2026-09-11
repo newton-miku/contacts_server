@@ -9,6 +9,10 @@ server.log
 phonebook-server.exe
 phonebook-server
 
+# ===== 安装包产物（源码在 deploy/installer/，二进制与 tar.gz 不入库）=====
+deploy/*.tar.gz
+deploy/.pkg_tmp/
+
 # ===== 前端构建产物 =====
 # 管理页源码在 web-admin/；构建产物 web/ 是 go:embed 需要的内容，
 # 克隆后先 cd web-admin && npm install && npm run build 再生（输出到 ../web）。

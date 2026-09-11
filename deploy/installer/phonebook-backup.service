@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily phonebook SQLite backup
+Requires=phonebook-backup.timer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/phonebook-backup.sh
+# 备份落盘即可读，root 所有
+User=root

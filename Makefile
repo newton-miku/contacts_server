@@ -12,12 +12,19 @@
 # 版本自动注入：BIN_VERSION=git 短 commit（非 git 目录回退 dev），BIN_TIME=构建时刻(UTC)。
 # 可覆盖，例如：make release BIN_VERSION=v1.2.0
 #
+# 没有 make 的环境（如 Windows Git Bash）不用手搓这些命令：push 到 main 后
+# GitHub Actions 会跑同一套步骤并产出安装包，见 .github/workflows/release.yml。
+#
 # 用 '>' 作 recipe 前缀（.RECIPEPREFIX），避免编辑器把制表符写成空格导致 make 报
 # “missing separator”；需 GNU make >= 3.82。
 .RECIPEPREFIX = >
 SHELL := bash
 GO := go
 
+# 安装器源文件（install.sh / INSTALL.md / systemd 单元）已入库到 SRC_DIR，
+# 本地 make 与 GitHub Actions（.github/workflows/release.yml）共用同一份，避免两处各改各的。
+SRC_DIR := deploy/installer
+# 产物仍输出到仓库外的 ../deploy/：那里的 phonebook-server 二进制是反代版安装流程在用的。
 DEPLOY := ../deploy
 PKG_DIR := $(DEPLOY)/installer
 PKG_NAME := phonebook-server_auto-install_linux-amd64.tar.gz
@@ -54,14 +61,15 @@ linux:
 > chmod +x $(PKG_DIR)/phonebook-server
 > cp $(PKG_DIR)/phonebook-server $(DEPLOY)/phonebook-server
 
-# 自动安装包 = installer/ 目录内容 + 新二进制，打 tar.gz（先确保 linux 最新）
+# 自动安装包 = 入库的安装器源文件 + 新二进制，打 tar.gz（先确保 linux 最新）
 package: linux
 > rm -rf $(DEPLOY)/.pkg_tmp
 > mkdir -p $(PKG_STAGE)
-> cp -p $(PKG_DIR)/INSTALL.md $(PKG_DIR)/install.sh \
->   $(PKG_DIR)/phonebook-backup.service $(PKG_DIR)/phonebook-backup.sh \
->   $(PKG_DIR)/phonebook-backup.timer $(PKG_DIR)/phonebook-server.service \
+> cp -p $(SRC_DIR)/INSTALL.md $(SRC_DIR)/install.sh \
+>   $(SRC_DIR)/phonebook-backup.service $(SRC_DIR)/phonebook-backup.sh \
+>   $(SRC_DIR)/phonebook-backup.timer $(SRC_DIR)/phonebook-server.service \
 >   $(PKG_DIR)/phonebook-server $(PKG_STAGE)/
+> chmod +x $(PKG_STAGE)/install.sh $(PKG_STAGE)/phonebook-backup.sh
 > tar -czf $(DEPLOY)/$(PKG_NAME) -C $(DEPLOY)/.pkg_tmp phonebook-server_installer
 > rm -rf $(DEPLOY)/.pkg_tmp
 

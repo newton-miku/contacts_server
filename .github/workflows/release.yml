@@ -1,0 +1,115 @@
+name: 服务端构建 (Linux 安装包)
+
+# 本机（Windows Git Bash）没有 make，`make release` 跑不了，故由 CI 承担打包：
+#   push 到 main        → 构建并上传安装包（Actions 运行页可下载 artifact）
+#   push tag v*         → 同上，并额外发布同名 Release（挂上安装包）
+#   workflow_dispatch   → 随时手动重跑
+#
+# 步骤与本地 Makefile 的 release 逐项一致（web → vet → linux 交叉编译 → package），
+# 产物：deploy/phonebook-server_auto-install_linux-amd64.tar.gz
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  package:
+    name: 构建 Linux 安装包
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-admin/package-lock.json
+
+      # 必须最先构建：管理页产物落到 web/，由 main.go 的 `go:embed all:web` 嵌入二进制。
+      # 少了它 go vet / go build 都会因 embed 找不到文件而失败；`all:` 前缀也不能省，
+      # 否则 Vite 产物里 _ 开头的文件会被跳过（管理页白屏）。
+      - name: 构建管理页（web-admin → web/）
+        working-directory: web-admin
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: go vet
+        run: go vet ./...
+
+      # 版本号注入方式与 Makefile 一致：-X phonebook-server/internal/api.BuildVersion/BuildTime
+      - name: 计算版本号与构建时间
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: 交叉编译 Linux amd64 静态二进制
+        env:
+          BIN_VERSION: ${{ steps.ver.outputs.version }}
+          BIN_TIME: ${{ steps.ver.outputs.build_time }}
+        run: |
+          set -euo pipefail
+          ldflags="-X phonebook-server/internal/api.BuildVersion=${BIN_VERSION}"
+          ldflags="${ldflags} -X phonebook-server/internal/api.BuildTime=${BIN_TIME}"
+          # modernc/sqlite 是纯 Go 实现，无需 CGO，可直接交叉编译静态二进制
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "$ldflags" -o deploy/installer/phonebook-server .
+          file deploy/installer/phonebook-server
+
+      # 包结构与本地 `make package` 逐项一致：顶层目录 phonebook-server_installer/，
+      # 两个 .sh 必须带可执行位（服务器上要直接 ./install.sh）。
+      - name: 打安装包
+        run: |
+          set -euo pipefail
+          stage="deploy/.pkg_tmp/phonebook-server_installer"
+          rm -rf deploy/.pkg_tmp
+          mkdir -p "$stage"
+          cp -p deploy/installer/INSTALL.md deploy/installer/install.sh \
+                deploy/installer/phonebook-backup.service deploy/installer/phonebook-backup.sh \
+                deploy/installer/phonebook-backup.timer deploy/installer/phonebook-server.service \
+                deploy/installer/phonebook-server "$stage"/
+          chmod +x "$stage/install.sh" "$stage/phonebook-backup.sh"
+          tar -czf deploy/phonebook-server_auto-install_linux-amd64.tar.gz \
+            -C deploy/.pkg_tmp phonebook-server_installer
+          rm -rf deploy/.pkg_tmp
+          tar -tzvf deploy/phonebook-server_auto-install_linux-amd64.tar.gz
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v7
+        with:
+          name: phonebook-server_auto-install_linux-amd64
+          path: deploy/phonebook-server_auto-install_linux-amd64.tar.gz
+          if-no-files-found: error
+
+  # artifact 与 Release 资产是两回事：artifact 由 GitHub 二次打包（下载即一层 zip），
+  # Release 资产则是原样的 tar.gz —— 文件名与 INSTALL.md 里的示例保持一致，避免对不上。
+  release:
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 创建 Release 需要
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: phonebook-server_auto-install_linux-amd64
+          path: dist
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/phonebook-server_auto-install_linux-amd64.tar.gz

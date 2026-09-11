@@ -1,6 +1,10 @@
 # 统一换行策略：按内容类型自动处理，入库存 LF
 * text=auto
 
+# shell 脚本强制 LF：安装包里的 install.sh / phonebook-backup.sh 一旦带 CRLF，
+# 在 Linux 服务器上会直接报 “bad interpreter” 之类错误。
+*.sh text eol=lf
+
 # 明确二进制（避免被文本化误判）
 *.png binary
 *.jpg binary

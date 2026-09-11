@@ -1,0 +1,28 @@
+# phonebook-server 系统服务单元（免反代直连版）
+# install.sh 会把其中的 0.0.0.0:8080 替换成所选端口后安装到 /etc/systemd/system/
+[Unit]
+Description=Phonebook Server (通讯录后端 + 内嵌管理页)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=phonebook
+Group=phonebook
+WorkingDirectory=/srv/phonebook
+EnvironmentFile=/srv/phonebook/phonebook.env
+ExecStart=/srv/phonebook/phonebook-server -addr 0.0.0.0:8080 -db /srv/phonebook/phonebook.db
+Restart=on-failure
+RestartSec=3
+
+# 加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/phonebook
+RestrictSUIDSGID=true
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
