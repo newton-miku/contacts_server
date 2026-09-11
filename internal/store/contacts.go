@@ -203,6 +203,34 @@ func (s *Store) ListContacts(ctx context.Context, unitIDs []int64) ([]Contact, e
 	return contacts, rows.Err()
 }
 
+// FindContactNameByPhone 按号码在通讯录里查姓名（激活码/账号的默认姓名用）。
+// unitIDs 为调用者可见范围（nil = 不限，与 contactScope 语义一致）。
+// 号码与 主叫号/手机2/座机/传真 逐一比对，优先手机号命中（同号多联系人时更可能是本人）；
+// 返回空字符串表示没有匹配的联系人。
+func (s *Store) FindContactNameByPhone(ctx context.Context, phone string, unitIDs []int64) (string, error) {
+	if phone == "" {
+		return "", nil
+	}
+	where, args := contactScope(unitIDs)
+	if where == "" {
+		where = " WHERE 1 = 1"
+	}
+	args = append(args, phone, phone, phone, phone, phone, phone)
+	row := s.db.QueryRowContext(ctx,
+		`SELECT c.display_name`+contactFrom+where+
+			` AND (c.phone_number = ? OR c.mobile2 = ? OR c.landline = ? OR c.fax = ?)
+			  ORDER BY CASE WHEN c.phone_number = ? OR c.mobile2 = ? THEN 0 ELSE 1 END, c.id
+			  LIMIT 1`, args...)
+	var name string
+	if err := row.Scan(&name); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(name), nil
+}
+
 // ListContactsScoped 按可见范围返回联系人（单位命中 或 单点授权命中）。
 // 这是所有对外读取（手机端/网页）的统一入口；范围为空则返回空集。
 func (s *Store) ListContactsScoped(ctx context.Context, sc ContactScope) ([]Contact, error) {

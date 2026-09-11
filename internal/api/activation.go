@@ -91,9 +91,15 @@ func (s *Server) handleDeviceActivate(w http.ResponseWriter, r *http.Request) {
 	// 按手机号找/建只读账号（未设置密码，见下）。
 	u, err := s.store.UserByUsername(r.Context(), phone)
 	if errors.Is(err, store.ErrNotFound) {
+		// 生成时没填姓名的码（历史码/接口直调）在这里补查一次通讯录，
+		// 免得建出一个没有姓名的账号（否则「用户管理」里只能看到一串号码）。
+		name := strings.TrimSpace(c.DisplayName)
+		if name == "" {
+			name = s.defaultDisplayName(r, phone, nil)
+		}
 		// 密码存哨兵值：激活码账号默认不可用密码登录；将来要支持手机号+密码登录时，
 		// 由管理员重置密码或客户端激活后自行设置。
-		u, err = s.store.CreateUser(r.Context(), phone, auth.NoPasswordHash, c.DisplayName, c.Role, false)
+		u, err = s.store.CreateUser(r.Context(), phone, auth.NoPasswordHash, name, c.Role, false)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "创建账号失败")
 			return
@@ -200,6 +206,19 @@ type codeInput struct {
 	ContactIDs  []int64 `json:"contactIds"`
 }
 
+// defaultDisplayName 姓名留空时的兜底：先按号码在通讯录里查，
+// 通讯录没有（或查到的为空）再用「账号管理」里同号码账号的姓名；都没有返回空串。
+// scope 为调用者可见范围（nil = 不限）。两次查询失败只是拿不到名字，不该阻断发码，故忽略错误。
+func (s *Server) defaultDisplayName(r *http.Request, phone string, scope []int64) string {
+	if name, err := s.store.FindContactNameByPhone(r.Context(), phone, scope); err == nil && name != "" {
+		return name
+	}
+	if u, err := s.store.UserByUsername(r.Context(), phone); err == nil {
+		return strings.TrimSpace(u.DisplayName)
+	}
+	return ""
+}
+
 // handleCreateActivationCodes 批量生成激活码（受每日上限约束）。
 func (s *Server) handleCreateActivationCodes(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -228,6 +247,12 @@ func (s *Server) handleCreateActivationCodes(w http.ResponseWriter, r *http.Requ
 		boundSet[id] = true
 	}
 	isUnitAdmin := me.Role == store.RoleUnit
+	// 姓名兜底用的可见范围：unit 管理员只在自己绑定的单位里找，super/root 全库找。
+	nameScope, err := s.staffUnitIDs(r)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取权限失败")
+		return
+	}
 
 	days := in.ExpiresInDays
 	if days <= 0 {
@@ -264,9 +289,14 @@ func (s *Server) handleCreateActivationCodes(w http.ResponseWriter, r *http.Requ
 				return
 			}
 		}
+		// 姓名留空 → 兜底：先按号码查通讯录，通讯录没有再用「账号管理」里同号码账号的姓名。
+		name := strings.TrimSpace(it.DisplayName)
+		if name == "" {
+			name = s.defaultDisplayName(r, phone, nameScope)
+		}
 		items = append(items, store.NewActivationCode{
 			Phone:       phone,
-			DisplayName: strings.TrimSpace(it.DisplayName),
+			DisplayName: name,
 			Role:        store.RoleEndUser,
 			UnitIDs:     it.UnitIDs,
 			ContactIDs:  it.ContactIDs,

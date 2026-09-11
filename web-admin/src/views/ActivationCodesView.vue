@@ -196,8 +196,21 @@ async function onCreate() {
       expiresInDays: Number(form.expiresInDays) || 7,
     })
     ElMessage.success(`已生成 ${res.codes.length} 个激活码（今日 ${res.todayCreated}/${res.dailyLimit}）`)
+    // 姓名留空时由服务端补全（通讯录 → 账号管理），这里把补到的名字回显出来便于核对。
+    const typedName = phones.length === 1 ? form.displayName.trim() : ''
+    const autoNamed = (res.codes || []).filter((c) => c.displayName && c.displayName !== typedName)
+    if (autoNamed.length) {
+      const preview = autoNamed
+        .slice(0, 5)
+        .map((c) => `${c.phone} ${c.displayName}`)
+        .join('、')
+      ElMessage.info(
+        `已自动补全 ${autoNamed.length} 个姓名：${preview}${autoNamed.length > 5 ? ' …' : ''}`,
+      )
+    }
     todayCreated.value = res.todayCreated
     form.phones = ''
+    form.displayName = ''
     await reload()
   } catch (e) {
     ElMessage.error(e.message)
@@ -376,7 +389,10 @@ async function saveSettings() {
           />
         </el-form-item>
         <el-form-item label="姓名">
-          <el-input v-model="form.displayName" placeholder="仅单个手机号时填写（便于管理员核对）" style="max-width: 280px" />
+          <el-input v-model="form.displayName" placeholder="留空则自动按号码补全" style="max-width: 280px" />
+          <div class="hint block">
+            仅单个手机号时生效。留空时服务端按号码到通讯录里找姓名；通讯录没有，则用「账号管理」中同号码账号的姓名。
+          </div>
         </el-form-item>
         <el-form-item label="可见单位">
           <div style="width: 100%">
