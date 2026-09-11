@@ -151,6 +151,9 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		Role        string  `json:"role"`
 		IsActive    bool    `json:"isActive"`
 		UnitIDs     []int64 `json:"unitIds"`
+		// Password 可选：非空即为该账号设置新密码（置首登改密）。
+		// 只读账号（激活码创建）本来没有密码，提升为管理角色时必填。
+		Password string `json:"password"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -207,6 +210,26 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 角色互转的密码兜底：只读账号（激活码创建）没有密码，升为管理角色后无法登录网页后台，
+	// 故必须在此一并设置初始密码。已有密码者留空即不修改。
+	if in.Password != "" && len(in.Password) < 6 {
+		writeErr(w, http.StatusBadRequest, "新密码至少 6 位")
+		return
+	}
+	if in.Password == "" && !target.HasPassword &&
+		(in.Role == store.RoleRoot || in.Role == store.RoleSuper || in.Role == store.RoleUnit) {
+		writeErr(w, http.StatusBadRequest, "该账号尚未设置密码，提升为管理角色前请先为其设置初始密码")
+		return
+	}
+	var newHash string
+	if in.Password != "" {
+		h, err := auth.HashPassword(in.Password)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "无法加密密码")
+			return
+		}
+		newHash = h
+	}
 
 	// 防止移除最后一个可用的全局管理员（super/root）。
 	if store.IsSuperRole(target.Role) && target.IsActive && !store.IsSuperRole(in.Role) {
@@ -250,13 +273,22 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 	if !in.IsActive {
 		_ = s.store.DeleteUserSessions(r.Context(), id)
 	}
+	// 顺带设置新密码（角色互转时把「未设置密码」的只读账号转成管理账号）。
+	// 原本就有密码 → 旧凭据已被替换，踢掉全部会话；原本没有密码 → 无旧凭据可泄露，不打扰其手机端登录。
+	if newHash != "" {
+		_ = s.store.ResetUserPassword(r.Context(), id, newHash)
+		if target.HasPassword {
+			_ = s.store.DeleteUserSessions(r.Context(), id)
+		}
+	}
 	u, err := s.store.UserWithUnits(r.Context(), id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取账号失败")
 		return
 	}
 	s.logAudit(r, store.LogCategoryAccount, "update_user",
-		"修改账号 "+u.Username+"（角色 "+roleLabel(u.Role)+"，启用 "+boolText(u.IsActive)+"）")
+		"修改账号 "+u.Username+"（角色 "+roleLabel(u.Role)+"，启用 "+boolText(u.IsActive)+
+			"，密码"+map[bool]string{true: "已重设", false: "未改动"}[newHash != ""]+"）")
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -285,6 +317,12 @@ func (s *Server) handleResetAdminPassword(w http.ResponseWriter, r *http.Request
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "读取账号失败")
+		return
+	}
+	// 只有 root 能重置 root 账号的密码（与改角色/删除同一规则）：
+	// 否则 super 可借「重置密码 → 登录 root 账号」完成提权。
+	if target.Role == store.RoleRoot && me.Role != store.RoleRoot {
+		writeErr(w, http.StatusForbidden, "只有系统最高管理员（root）可重置 root 账号的密码")
 		return
 	}
 	if len(in.NewPassword) < 6 {

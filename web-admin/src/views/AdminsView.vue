@@ -42,6 +42,9 @@ const form = reactive({
 })
 
 const isSelf = (row) => session.user?.id === row.id
+// canManage 能否对目标账号执行编辑/改密/删除：自己的账号走「修改密码」页；
+// root 账号只有 root 能动（与服务端同一规则）。
+const canManage = (row) => !isSelf(row) && (row.role !== 'root' || isRoot.value)
 const roleName = (r) =>
   ({ root: '系统管理员', super: '超级管理员', unit: '单位管理员', enduser: '终端用户' })[r] || r
 const roleTag = (r) =>
@@ -117,6 +120,10 @@ function openEdit(row) {
     ElMessage.info('自己的账号请在「修改密码」页操作，不能用此功能改自己')
     return
   }
+  if (row.role === 'root' && !isRoot.value) {
+    ElMessage.info('只有系统最高管理员（root）可修改该账号')
+    return
+  }
   editing.value = row
   Object.assign(form, {
     username: row.username,
@@ -133,23 +140,37 @@ function openEdit(row) {
 const usernameDisabled = computed(() => editing.value != null)
 const title = computed(() => (editing.value ? `编辑账号：${editing.value.username}` : '新建账号'))
 
+// MANAGED_ROLES 需要密码才能登录网页后台的角色（只读的 enduser 可无密码）。
+const MANAGED_ROLES = ['root', 'super', 'unit']
+// 编辑态：目标账号当前无法密码登录（激活码创建，存的是哨兵值），且要提升为管理角色 → 必须设置密码。
+const editPasswordRequired = computed(
+  () =>
+    editing.value != null &&
+    editing.value.hasPassword === false &&
+    MANAGED_ROLES.includes(form.role),
+)
+
 const rules = {
   username: editing.value
     ? {}
     : [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: editing.value
-    ? {}
-    : [
-        {
-          validator: (_r, v, cb) => {
-            if (form.role === 'enduser') return cb() // 终端用户可留空 = 暂不设置密码
-            if (!v) return cb(new Error('请输入初始密码'))
-            if (String(v).length < 6) return cb(new Error('初始密码至少 6 位'))
-            cb()
-          },
-          trigger: 'blur',
-        },
-      ],
+  password: [
+    {
+      validator: (_r, v, cb) => {
+        const val = String(v ?? '')
+        if (val) {
+          if (val.length < 6) return cb(new Error('密码至少 6 位'))
+          return cb()
+        }
+        // 留空：编辑态仅在“提升无密码账号为管理角色”时必填，其余留空 = 不修改密码。
+        if (editPasswordRequired.value) return cb(new Error('该账号尚未设置密码，请设置初始密码'))
+        // 新建态：只读用户可留空（= 暂不设置密码），管理角色必须给初始密码。
+        if (!editing.value && form.role !== 'enduser') return cb(new Error('请输入初始密码'))
+        cb()
+      },
+      trigger: 'blur',
+    },
+  ],
   unitIds: [
     {
       validator: (_r, v, cb) => {
@@ -169,6 +190,10 @@ async function submit() {
     ElMessage.warning('单位管理员至少需绑定一个单位')
     return
   }
+  if (editPasswordRequired.value && !form.password) {
+    ElMessage.warning('该账号尚未设置密码，提升为管理角色前请先设置初始密码')
+    return
+  }
   saving.value = true
   try {
     const payload = {
@@ -178,8 +203,14 @@ async function submit() {
       unitIds: ['super', 'root'].includes(form.role) ? [] : form.unitIds,
     }
     if (editing.value) {
+      const roleChanged = editing.value.role !== form.role
+      if (form.password) payload.password = form.password
       await updateAdminUser(editing.value.id, payload)
-      ElMessage.success('已保存账号设置')
+      ElMessage.success(
+        roleChanged
+          ? `已改为「${roleName(form.role)}」，该账号已移至${form.role === 'enduser' ? '「用户管理」' : '「管理员管理」'}标签页`
+          : '已保存账号设置',
+      )
     } else {
       await createAdminUser({ ...payload, username: form.username.trim(), password: form.password })
       ElMessage.success(
@@ -323,9 +354,11 @@ async function onResetPassword(row) {
           </el-table-column>
           <el-table-column label="操作" width="220" align="right">
             <template #default="{ row }">
-              <el-button v-if="!isSelf(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
-              <el-button v-if="!isSelf(row)" link type="warning" @click="onResetPassword(row)">重置密码</el-button>
-              <el-button v-if="!isSelf(row)" link type="danger" @click="onDelete(row)">删除</el-button>
+              <el-button v-if="canManage(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="canManage(row)" link type="warning" @click="onResetPassword(row)">重置密码</el-button>
+              <el-button v-if="canManage(row)" link type="danger" @click="onDelete(row)">删除</el-button>
+              <span v-if="isSelf(row)" class="self-hint">当前登录账号</span>
+              <span v-else-if="!canManage(row)" class="self-hint">仅 root 可操作</span>
             </template>
           </el-table-column>
           <template #empty>
@@ -420,14 +453,22 @@ async function onResetPassword(row) {
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item v-if="activeTab === 'admin'" label="角色" prop="role">
+        <el-form-item v-if="editing || activeTab === 'admin'" label="角色" prop="role">
           <el-radio-group v-model="form.role">
             <el-radio v-if="isRoot" value="root">系统管理员</el-radio>
             <el-radio value="super">超级管理员</el-radio>
             <el-radio value="unit">单位管理员</el-radio>
+            <el-radio v-if="editing" value="enduser">终端用户</el-radio>
           </el-radio-group>
+          <span v-if="editing" class="hint">
+            改为「终端用户」= 只读账号，仅可浏览绑定/公开单位，无法进入后台
+          </span>
         </el-form-item>
-        <el-form-item v-if="form.role === 'unit' || form.role === 'enduser'" label="负责单位" prop="unitIds">
+        <el-form-item
+          v-if="form.role === 'unit' || form.role === 'enduser'"
+          :label="form.role === 'unit' ? '负责单位' : '可见单位'"
+          prop="unitIds"
+        >
           <el-select
             v-model="form.unitIds"
             multiple
@@ -437,11 +478,27 @@ async function onResetPassword(row) {
           >
             <el-option v-for="u in units" :key="u.id" :label="u.name" :value="u.id" />
           </el-select>
+          <span v-if="editing && form.role === 'enduser'" class="hint">
+            由管理员降级而来时，原绑定单位会保留，可在此增减
+          </span>
         </el-form-item>
         <template v-if="editing">
           <el-form-item label="启用状态" prop="isActive">
             <el-switch v-model="form.isActive" active-text="启用" inactive-text="停用" />
             <span class="hint">停用后该账号的所有会话与设备令牌将立即失效</span>
+          </el-form-item>
+          <el-form-item label="设置新密码" prop="password">
+            <el-input
+              v-model="form.password"
+              type="password"
+              show-password
+              maxlength="64"
+              :placeholder="editPasswordRequired ? '该账号尚未设置密码，必填（至少 6 位）' : '留空则不修改密码'"
+            />
+            <span v-if="editPasswordRequired" class="hint">
+              该账号当前无法密码登录，提升为管理角色前必须先设置初始密码
+            </span>
+            <span v-else-if="form.password" class="hint">保存后该账号需重新改密，其已登录会话将失效</span>
           </el-form-item>
         </template>
         <el-form-item v-else label="初始密码" prop="password">
@@ -475,5 +532,6 @@ async function onResetPassword(row) {
 .tip { color: #64748b; font-size: 13px; margin: 0 0 10px 2px; }
 .table { border-radius: 8px; overflow: hidden; }
 .all { color: #059669; }
+.self-hint { color: #94a3b8; font-size: 12px; }
 .hint { margin-left: 10px; color: #94a3b8; font-size: 12px; }
 </style>
