@@ -17,7 +17,8 @@ func NewFromEnv(seedUser, seedPassword string) Config {
 		Addr:          ":8080",
 		DBPath:        "phonebook.db",
 		AdminUser:     envOr("PB_ADMIN_USER", firstNonEmpty(seedUser, "admin")),
-		AdminPassword: envOr("PB_ADMIN_PASSWORD", firstNonEmpty(seedPassword, "admin123")),
+		// 不在代码里留默认口令：未提供时留空，由首次播种时随机生成并打印（见 main.seedAdminIfNeeded）。
+		AdminPassword: envOr("PB_ADMIN_PASSWORD", seedPassword),
 	}
 	return cfg
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"embed"
 	"flag"
 	"fmt"
@@ -186,7 +187,19 @@ func seedAdminIfNeeded(cfg config.Config, st *store.Store) error {
 		return nil
 	}
 
-	hash, err := auth.HashPassword(cfg.AdminPassword)
+	// 不使用任何默认口令：未提供时随机生成一个并在控制台打印，避免「默认密码」被长期沿用。
+	password := cfg.AdminPassword
+	generated := false
+	if strings.TrimSpace(password) == "" {
+		pw, err := randomPassword(16)
+		if err != nil {
+			return fmt.Errorf("generate seed password: %w", err)
+		}
+		password = pw
+		generated = true
+	}
+
+	hash, err := auth.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("hash seed password: %w", err)
 	}
@@ -198,8 +211,11 @@ func seedAdminIfNeeded(cfg config.Config, st *store.Store) error {
 	fmt.Fprintln(os.Stderr, "================================================================")
 	fmt.Fprintf(os.Stderr, " 已创建初始管理员账号\n")
 	fmt.Fprintf(os.Stderr, "   用户名：%s\n", cfg.AdminUser)
-	fmt.Fprintf(os.Stderr, "   密码：  %s\n", cfg.AdminPassword)
-	fmt.Fprintf(os.Stderr, " 首次登录管理页时会被要求修改该密码。\n")
+	fmt.Fprintf(os.Stderr, "   密码：  %s\n", password)
+	if generated {
+		fmt.Fprintln(os.Stderr, "   （本次为随机生成，请立即妥善保存）")
+	}
+	fmt.Fprintln(os.Stderr, " 首次登录管理页时会被要求修改该密码。")
 	fmt.Fprintln(os.Stderr, "================================================================")
 	return nil
 }
@@ -233,4 +249,18 @@ func runMaintenance(st *store.Store) {
 		return
 	}
 	log.Printf("数据库整理完成：%d → %d 字节（本次清理 %d 条）", before, st.DBFileSize(), deleted)
+}
+
+// randomPassword 生成 n 位随机口令（大小写字母+数字），用于首次播种管理员账号。
+func randomPassword(n int) (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	out := make([]byte, n)
+	for i, b := range buf {
+		out[i] = alphabet[int(b)%len(alphabet)]
+	}
+	return string(out), nil
 }
