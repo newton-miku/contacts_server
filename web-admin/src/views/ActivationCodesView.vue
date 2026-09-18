@@ -462,7 +462,7 @@ async function saveSettings() {
         <span>单位账号默认密码</span>
         <el-input v-model="defaultPwInput" placeholder="至少 6 位" style="width: 220px" />
         <el-button type="primary" plain :loading="savingLimit" @click="saveSettings">保存</el-button>
-        <span class="hint">从通讯录导入创建的办公室/值班室账号用它作初始密码，首次登录强制修改</span>
+        <span class="hint">从通讯录导入创建的座机账号用它作初始密码，首次登录强制修改</span>
       </div>
     </el-card>
 
@@ -534,7 +534,7 @@ async function saveSettings() {
         type="info"
         :closable="false"
         show-icon
-        title="手机号联系人 → 一次性激活码（App 输码激活）；只有座机且名称含「办公室/值班室」的联系人 → 桌面端账号密码账号（初始密码用系统默认，首登强制改）。两者都占用每日额度。"
+        title="手机号联系人 → 一次性激活码（App 输码激活）；只有座机号的联系人 → 桌面端账号密码账号（初始密码用系统默认，首登强制改）。两者都占用每日额度。"
       />
       <div v-if="importResult" class="import-result">
         <el-divider />

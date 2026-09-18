@@ -295,11 +295,9 @@ func (s *Server) handleImportCodesFromContacts(w http.ResponseWriter, r *http.Re
 				CreatedBy:   me.ID,
 			})
 		case landline != "":
-			name := strings.TrimSpace(c.DisplayName)
-			if !strings.Contains(name, "办公室") && !strings.Contains(name, "值班室") {
-				addSkip(c, landline, "非「办公室/值班室」，不生成账号")
-				continue
-			}
+			// 座机 = 桌面端（账号密码）使用者。这里不再按姓名关键词（原「办公室/值班室」）
+			// 预筛：那会连带挡掉「搬迁后扶股」「喜河财政所」这类同样属于单位办公室的命名，
+			// 且姓名常是个人（如「李康（财政所长）」）而非机构名。是否建号由管理员在导入时选谁决定。
 			if usedPhone[landline] {
 				addSkip(c, landline, "号码重复（同批其他联系人已使用）")
 				continue
