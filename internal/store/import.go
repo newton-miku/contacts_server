@@ -11,7 +11,8 @@ import (
 // 命中多条（同单位确有多个同名）或不存在 → 新增，避免误合并。
 // 整批一个事务，全部成功或全部失败。
 // unitIDs 用于限定可影响的单位：nil=全部（超管/导入端已逐行放行），否则只在该范围内查重。
-// 返回 (新增数, 更新数)。任何一次写都会 bumpVersion（批量共用一次版本 +1）。
+// 返回 (新增数, 更新数)。有任何写入时打一次数据变动脏标记（整批只算一次改动，
+// 静默窗口到期或手动发布时合并 +1，只触发一次全量拉取）。
 func (s *Store) ImportContacts(ctx context.Context, unitIDs []int64, items []Contact) (created, updated int, err error) {
 	if len(items) == 0 {
 		return 0, 0, nil
@@ -99,11 +100,11 @@ func (s *Store) ImportContacts(ctx context.Context, unitIDs []int64, items []Con
 	}
 
 	if created+updated > 0 {
-		if err := s.bumpVersion(ctx, tx); err != nil {
+		if err := s.markDataChanged(ctx, tx); err != nil {
 			return 0, 0, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitWrite(tx); err != nil {
 		return 0, 0, err
 	}
 	return created, updated, nil

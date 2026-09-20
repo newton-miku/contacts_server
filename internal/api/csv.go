@@ -16,6 +16,9 @@ import (
 // 传真=办公室传真。
 var csvHeader = []string{"姓名", "手机号", "手机2", "座机", "传真", "单位", "职务", "邮箱"}
 
+// maxImportBytes 导入文件大小上限（8MB）：与 ParseMultipartForm 的内存阈值一致。
+const maxImportBytes = 8 << 20
+
 func writeCSVRow(w *csv.Writer, c store.Contact) {
 	w.Write([]string{
 		c.DisplayName,
@@ -73,14 +76,32 @@ func (s *Server) handleExportContacts(w http.ResponseWriter, r *http.Request) {
 	wr.Flush()
 }
 
+// handleExportContactsTemplate 下载**空的导入模板**：只有表头、没有任何数据行，
+// 供用户填好后走「导入 CSV」。表头与导出的 CSV 完全一致（姓名,手机号,手机2,座机,传真,单位,职务,邮箱），
+// 编码为 UTF-8 + BOM，Excel 双击打开不乱码。
+func (s *Server) handleExportContactsTemplate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	// 同时给出 ASCII 与中文文件名（现代浏览器优先用 filename*，中文文件名更友好）。
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="contacts-template.csv"; `+
+			`filename*=UTF-8''%E9%80%9A%E8%AE%AF%E5%BD%95%E5%AF%BC%E5%85%A5%E6%A8%A1%E6%9D%BF.csv`)
+	w.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM
+	wr := csv.NewWriter(w)
+	wr.Write(csvHeader)
+	wr.Flush()
+}
+
 // handleImportContacts 导入 CSV（super 或 unit）：以「单位+姓名」为关键字批量 upsert——
 // 命中唯一则覆盖（含 手机/手机2/座机/传真），否则新增。整批一个事务，全部成功或全部失败。
+// 姓名一律去掉全部空白（见 store.NormalizeContact），避免「张 三」与「张三」被当成两个人。
 // 号码按类型分列（手机号/手机2/座机/传真，均可留空，至少一个）：主叫号=手机优先、无则座机、
 // 仍无则传真；短固话自动补 0915 区号（store 侧统一归一）。
+// 文件编码自动识别：UTF-8（含 BOM）/ GB2312 / GBK / GB18030 / UTF-16（见 csv_encoding.go），
+// 中文 Windows 上 Excel/WPS 直接另存 CSV（GB2312）也能导入。
 // 单位列按名称匹配：super 可以一次性导入整本通讯录——CSV 里尚未建好的单位会自动新建；
 // unit 只能导入其绑定单位，未预建或不在其范围内的单位整行报错中止。
 func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(8 << 20); err != nil { // 8MB 上限
+	if err := r.ParseMultipartForm(maxImportBytes); err != nil { // 8MB 上限
 		writeErr(w, http.StatusBadRequest, "上传内容无效（需 multipart 表单）")
 		return
 	}
@@ -91,9 +112,23 @@ func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// 兼容 Excel 导出的 UTF-8 BOM。
-	br := newBOMReader(file)
-	rd := csv.NewReader(br)
+	// 先整体读入并按 BOM/编码特征解码成 UTF-8（兼容 GB2312/GBK 的 Excel 导出）。
+	raw, err := io.ReadAll(io.LimitReader(file, maxImportBytes+1))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "读取上传文件失败")
+		return
+	}
+	if len(raw) > maxImportBytes {
+		writeErr(w, http.StatusBadRequest, "文件过大（超过 8MB），请拆分后分批导入")
+		return
+	}
+	text, enc, err := decodeCSV(raw)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	rd := csv.NewReader(strings.NewReader(text))
 	rd.FieldsPerRecord = -1 // 允许列数不一，按表头对齐
 	rd.LazyQuotes = true
 	rd.TrimLeadingSpace = true
@@ -241,7 +276,7 @@ func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
 		s.logAudit(r, store.LogCategoryUnit, "create", "CSV 导入自动新建单位 "+un.Name)
 	}
 	detail := "CSV 导入 " + strconv.Itoa(len(parsed)) + " 行（新增 " + strconv.Itoa(created) +
-		"，更新 " + strconv.Itoa(updated) + "）"
+		"，更新 " + strconv.Itoa(updated) + "，源文件编码 " + enc + "）"
 	if len(newUnits) > 0 {
 		detail += "，自动新建单位 " + strconv.Itoa(len(newUnits)) + " 个"
 	}
@@ -251,6 +286,7 @@ func (s *Server) handleImportContacts(w http.ResponseWriter, r *http.Request) {
 		"created":      created,
 		"updated":      updated,
 		"unitsCreated": len(newUnits),
+		"encoding":     enc, // 识别到的源文件编码（utf-8 / gb18030 / utf-16le …）
 	})
 }
 
@@ -316,25 +352,4 @@ func isBlankRow(row []string) bool {
 		}
 	}
 	return true
-}
-
-// bomReader 剥掉流开头的 UTF-8 BOM。
-type bomReader struct {
-	r       io.Reader
-	skipped bool
-}
-
-func newBOMReader(r io.Reader) *bomReader { return &bomReader{r: r} }
-
-func (b *bomReader) Read(p []byte) (int, error) {
-	if !b.skipped {
-		b.skipped = true
-		var bom [3]byte
-		n, err := io.ReadFull(b.r, bom[:])
-		if err != nil || string(bom[:n]) != "\xEF\xBB\xBF" {
-			// 不是 BOM：把已读字节还回去。
-			return io.MultiReader(strings.NewReader(string(bom[:n])), b.r).Read(p)
-		}
-	}
-	return b.r.Read(p)
 }

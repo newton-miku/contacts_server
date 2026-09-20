@@ -98,6 +98,20 @@ func run(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 数据版本发布器：写操作只打脏标记，这里等「静默窗口」内不再有改动后合并成一次版本 +1，
+	// 避免连续改 N 条记录就产生 N 个版本、把手机端的全量拉取放大 N 倍。
+	// 窗口由 root 在系统设置里配置（默认 15 分钟，0 = 有改动即发布）；管理员也可手动立即发布。
+	go st.RunVersionPublisher(ctx, store.PublisherOptions{
+		OnPublish: func(version int64, published bool, err error) {
+			switch {
+			case err != nil:
+				log.Printf("数据版本发布失败（稍后重试）：%v", err)
+			case published:
+				log.Printf("数据版本已发布：%d（静默窗口内无新改动，改动已合并发布）", version)
+			}
+		},
+	})
+
 	go func() {
 		log.Printf("phonebook-server 已启动，监听 %s（管理页：http://localhost%s）", cfg.Addr, cfg.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

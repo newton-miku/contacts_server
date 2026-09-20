@@ -57,7 +57,8 @@ func (g *loginGuard) clear(key string) {
 //	go build -ldflags "-X phonebook-server/internal/api.BuildVersion=$(git rev-parse --short HEAD)" .
 //
 // 未注入时为 "dev"（对应本地 go run）。经 GET /api/version 的 appVersion 字段暴露，
-// 管理页顶栏展示（与 meta.data_version「数据版本」区分：那是每次写 +1 的缓存同步号）。
+// 管理页顶栏展示（与 meta.data_version「数据版本」区分：那是写操作打脏标记、
+// 后台按静默窗口合并 +1 的客户端缓存同步号，见 internal/store/version.go）。
 var BuildVersion = "dev"
 
 // BuildTime 是构建时刻（UTC RFC3339），与 BuildVersion 一同在构建期注入（见上）；
@@ -95,6 +96,8 @@ func (s *Server) Handler() http.Handler {
 	// ---- 公开读（仅健康检查与版本；联系人必须带令牌）----
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/version", s.handleGetVersion)
+	// 手动发布数据版本（管理员）：把待发布的改动马上合并成一次版本递增
+	mux.HandleFunc("POST /api/version/publish", s.withStaff(s.handlePublishVersion))
 	mux.HandleFunc("GET /api/contacts", s.withAuth(s.handleListContacts))
 
 	// ---- 设备激活（公开：用一次性激活码换取长期设备令牌）----
@@ -119,6 +122,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/contacts/{id}", s.withStaff(s.handleUpdateContact))
 	mux.HandleFunc("DELETE /api/contacts/{id}", s.withStaff(s.handleDeleteContact))
 	mux.HandleFunc("GET /api/contacts/export", s.withStaff(s.handleExportContacts))
+	// 空的导入模板（只有表头），供「导入 CSV」前下载填写
+	mux.HandleFunc("GET /api/contacts/template", s.withStaff(s.handleExportContactsTemplate))
 	mux.HandleFunc("POST /api/contacts/import", s.withStaff(s.handleImportContacts))
 	mux.HandleFunc("GET /api/duplicates", s.withStaff(s.handleDuplicates))
 	// 管理页联系人分页查询（服务端分页 + 搜索，避免一次拉全量）

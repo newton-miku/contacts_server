@@ -50,10 +50,22 @@ onMounted(load)
         <el-descriptions-item label="数据库结构版本">v{{ meta.schemaVersion }}</el-descriptions-item>
         <el-descriptions-item label="数据版本">{{ meta.version }}</el-descriptions-item>
         <el-descriptions-item label="数据更新时间">{{ fmtTime(meta.updatedAt) }}</el-descriptions-item>
+        <el-descriptions-item label="待发布改动">
+          <span v-if="meta.pending">
+            有（<template v-if="meta.publishDueAt">预计 {{ fmtTime(meta.publishDueAt) }} 自动发布，</template>可在顶栏点「立即发布」马上生效）
+          </span>
+          <span v-else>无</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="数据发布间隔">
+          {{ meta.quietMinutes === 0 ? '0（有改动即发布）' : `${meta.quietMinutes} 分钟` }}
+        </el-descriptions-item>
       </el-descriptions>
       <div class="hint">
-        说明：<b>服务端版本/构建时间</b>标识运行的程序本身；<b>数据版本</b>在每次写入时 +1，
-        手机客户端据此判断缓存是否需要重拉全量；<b>数据库结构版本</b>由服务端启动迁移维护。
+        说明：<b>服务端版本/构建时间</b>标识运行的程序本身；<b>数据版本</b>是手机端缓存同步号——
+        增删改只打脏标记，后台等到「最后一条改动之后满<b>数据发布间隔</b>（默认 15 分钟）没有新改动」
+        才把它合并成一次 +1 发布，因此连续改多条记录只会让手机端重拉一次全量；
+        管理员可在顶栏点「立即发布」跳过等待，让改动马上同步。
+        <b>数据库结构版本</b>由服务端启动迁移维护。
       </div>
     </el-card>
 

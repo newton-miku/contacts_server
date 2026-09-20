@@ -474,6 +474,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	logRetention, _ := s.store.LogRetentionDays(r.Context())
 	mt, _ := s.store.MaintenanceTime(r.Context())
 	autoVac, _ := s.store.AutoVacuumEnabled(r.Context())
+	quiet, _ := s.store.VersionQuietMinutes(r.Context())
+	vs, _ := s.store.VersionState(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"activationDailyLimit":   limit,
 		"activationToday":        created,
@@ -482,6 +484,10 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"logRetentionDays":       logRetention,
 		"maintenanceTime":        mt,
 		"autoVacuum":             autoVac,
+		"versionQuietMinutes":    quiet,
+		"dataVersion":            vs.Version,
+		"dataVersionPending":     vs.Pending,
+		"dataVersionUpdatedAt":   vs.UpdatedAtRaw,
 		"dbSizeBytes":            s.store.DBFileSize(),
 	})
 }
@@ -494,6 +500,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		LogRetentionDays       *int    `json:"logRetentionDays"`
 		MaintenanceTime        *string `json:"maintenanceTime"`
 		AutoVacuum             *bool   `json:"autoVacuum"`
+		VersionQuietMinutes    *int    `json:"versionQuietMinutes"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		return
@@ -561,6 +568,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		detail += fmt.Sprintf("，自动整理=%v", *in.AutoVacuum)
+	}
+	if in.VersionQuietMinutes != nil {
+		mins := *in.VersionQuietMinutes
+		if mins < 0 || mins > store.MaxVersionQuietMinutes {
+			writeErr(w, http.StatusBadRequest,
+				fmt.Sprintf("数据版本静默窗口需在 0~%d 分钟之间（0 = 有改动即发布）", store.MaxVersionQuietMinutes))
+			return
+		}
+		if err := s.store.SetVersionQuietMinutes(r.Context(), mins); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存数据版本静默窗口失败")
+			return
+		}
+		detail += fmt.Sprintf("，数据版本静默窗口 %d 分钟", mins)
 	}
 	s.logAudit(r, store.LogCategoryAccount, "update_settings", detail)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "activationDailyLimit": in.ActivationDailyLimit})

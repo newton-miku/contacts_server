@@ -1,13 +1,15 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Plus, Phone, Download, Upload, Delete } from '@element-plus/icons-vue'
+import { Search, Refresh, Plus, Phone, Download, Upload, Delete, Document } from '@element-plus/icons-vue'
 import ContactFormDialog from '../components/ContactFormDialog.vue'
 import { session } from '../stores/session'
+import { refreshVersion } from '../stores/phonebook'
 import {
   clearDirectory,
   deleteContact,
   exportCSV,
+  exportContactsTemplate,
   getContactLinkedUser,
   getUserVisibility,
   importCSV,
@@ -52,6 +54,13 @@ async function load() {
 function search() {
   page.value = 1
   load()
+}
+
+// onSaved 联系人新增/修改成功后：刷新列表 + 刷新版本信息，让顶栏立刻提示「有改动待发布」。
+// 改动不会马上对手机端生效（要等静默窗口到期或管理员点「立即发布」），见 stores/phonebook.js。
+async function onSaved() {
+  await load()
+  refreshVersion().catch(() => {})
 }
 
 onMounted(async () => {
@@ -124,6 +133,7 @@ async function onRemove(row) {
     await deleteContact(row.id)
     ElMessage.success(disableAccount ? '已删除联系人并停用账号' : '已删除联系人')
     await load()
+    refreshVersion().catch(() => {})
   } catch (e) {
     ElMessage.error(`删除失败：${e.message}`)
   }
@@ -177,7 +187,13 @@ function openEdit(row) {
 
 function onExport() {
   exportCSV() // 空库时导出的表头即为可填写的空模板
-  ElMessage.info('已开始下载 contacts.csv（数据为空时即为导入模板）')
+  ElMessage.info('已开始下载 contacts.csv（含全部联系人；只要空模板请点「下载导入模板」）')
+}
+
+// onTemplate 下载**空的**导入模板：只有表头，没有数据行，填好后走「导入 CSV」。
+function onTemplate() {
+  exportContactsTemplate()
+  ElMessage.info('已下载空的导入模板：按表头填「姓名 / 手机号 / 单位」等列，填好后再点「导入 CSV」')
 }
 
 // 清空目录数据（仅超管）：删除全部联系人与未绑定的单位，用于「整本重新导入」前清场。
@@ -198,6 +214,7 @@ async function onClearDirectory() {
     units.value = await listUnits()
     page.value = 1
     await load()
+    refreshVersion().catch(() => {})
   } catch (e) {
     ElMessage.error(`清空失败：${e.message}`)
   } finally {
@@ -215,8 +232,17 @@ async function onFileChange(ev) {
   if (!file) return
   try {
     const tip = isSuper.value
-      ? '导入以「单位 + 姓名」为关键字：命中唯一则覆盖（含手机/手机2/座机/传真），其余新增。\n号码列：手机号、手机2、座机、传真；座机留 7 位短号保存时自动补 0915。\n超级管理员可一次性导入整本通讯录：CSV 里尚未建好的单位会自动新建。继续吗？'
-      : '导入以「单位 + 姓名」为关键字：命中唯一则覆盖，其余新增。\n注意：CSV 中的单位须已在「单位管理」中建好（单位管理员只能导入其负责的单位）。继续吗？'
+      ? '导入以「单位 + 姓名」为关键字：命中唯一则覆盖（含手机/手机2/座机/传真），其余新增。\n' +
+        '姓名里的空格会被自动删除（「张 三」=「张三」），不会因此建出重复记录。\n' +
+        '文件编码自动识别：UTF-8、GB2312/GBK（Excel/WPS 直接另存 CSV 即可）、UTF-16 都支持。\n' +
+        '号码列：手机号、手机2、座机、传真；座机留 7 位短号保存时自动补 0915。\n' +
+        '超级管理员可一次性导入整本通讯录：CSV 里尚未建好的单位会自动新建。\n' +
+        '没有现成表格？先点「下载导入模板」拿一份空表头。继续吗？'
+      : '导入以「单位 + 姓名」为关键字：命中唯一则覆盖，其余新增。\n' +
+        '姓名里的空格会被自动删除（「张 三」=「张三」），不会因此建出重复记录。\n' +
+        '文件编码自动识别：UTF-8、GB2312/GBK（Excel/WPS 直接另存 CSV 即可）、UTF-16 都支持。\n' +
+        '注意：CSV 中的单位须已在「单位管理」中建好（单位管理员只能导入其负责的单位）。\n' +
+        '没有现成表格？先点「下载导入模板」拿一份空表头。继续吗？'
     await ElMessageBox.confirm(tip, '导入 CSV', {
       type: 'warning',
       confirmButtonText: '导入',
@@ -229,10 +255,16 @@ async function onFileChange(ev) {
   try {
     const res = await importCSV(file)
     const base = `导入完成：新增 ${res.created} 条，覆盖更新 ${res.updated} 条`
-    ElMessage.success(res.unitsCreated ? `${base}，自动新建单位 ${res.unitsCreated} 个` : base)
+    // 提示识别到的源文件编码：GB2312 的 Excel 导出也能直接导入（便于用户确认不是乱码）
+    const enc = { gb18030: 'GB2312/GBK', 'utf-16le': 'UTF-16LE', 'utf-16be': 'UTF-16BE', 'utf-8-bom': 'UTF-8(BOM)' }[res.encoding]
+    const tail = [enc ? `已识别 ${enc} 编码` : '', res.unitsCreated ? `自动新建单位 ${res.unitsCreated} 个` : '']
+      .filter(Boolean)
+      .join('，')
+    ElMessage.success(tail ? `${base}（${tail}）` : base)
     units.value = await listUnits() // 若自动新建了单位，刷新单位下拉
     page.value = 1
     await load()
+    refreshVersion().catch(() => {})
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -268,6 +300,7 @@ async function onFileChange(ev) {
       <el-button type="primary" :icon="Search" @click="search">查询</el-button>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button :icon="Download" @click="onExport">导出 CSV</el-button>
+      <el-button :icon="Document" @click="onTemplate">下载导入模板</el-button>
       <el-button :icon="Upload" :loading="importing" @click="onPickFile">导入 CSV</el-button>
       <input ref="fileInput" type="file" accept=".csv,text/csv" style="display: none" @change="onFileChange" />
       <el-button
@@ -369,7 +402,7 @@ async function onFileChange(ev) {
       v-model="dialogVisible"
       :contact="editingContact"
       :units="units"
-      @saved="load"
+      @saved="onSaved"
       @unit-changed="onUnitChanged"
     />
   </div>

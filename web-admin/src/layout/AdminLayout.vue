@@ -1,23 +1,44 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { DataBoard, Phone, Lock, SwitchButton, User, OfficeBuilding, Avatar, Tickets, Search, InfoFilled, Key } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { session, signOut } from '../stores/session'
-import { pb, loadPhonebook } from '../stores/phonebook'
-import { fmtTime, getVersion } from '../api'
+import { pb, loadPhonebook, refreshVersion, publishVersionNow } from '../stores/phonebook'
+import { fmtTime } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 
-// 程序/发布版本与构建时间（GET /api/version，构建期 -ldflags 注入）。
-// 与「数据版本」（meta.data_version，每次写 +1，客户端缓存同步用）是两个概念：
-// 顶栏主文案显示程序版本，悬停提示展示 数据版本/结构版本/构建时间/更新时间；页脚常驻同批信息。
-const appMeta = ref({ appVersion: 'dev', buildTime: '', version: 0, updatedAt: '', schemaVersion: 0 })
+// 程序/发布版本、数据版本与结构版本（GET /api/version，构建期 -ldflags 注入）。
+// 「数据版本」与「程序版本」是两个概念：数据版本是客户端缓存同步号——写操作只打脏标记，
+// 后台按「静默窗口」（默认 15 分钟，root 可在系统设置里改）合并成一次 +1，
+// 管理员也可以点顶栏「立即发布」把改动马上同步到手机端。
 const versionTitle = computed(
   () =>
-    `版本 ${appMeta.value.appVersion || 'dev'} · 构建 ${fmtTime(appMeta.value.buildTime)}\n` +
-    `数据版本 ${appMeta.value.version} · 结构 v${appMeta.value.schemaVersion} · 更新于 ${fmtTime(appMeta.value.updatedAt)}`,
+    `程序版本 ${pb.appVersion || 'dev'} · 构建 ${fmtTime(pb.buildTime)}\n` +
+    `数据版本 ${pb.version} · 结构 v${pb.schemaVersion} · 更新于 ${fmtTime(pb.updatedAt)}\n` +
+    (pb.pending
+      ? `有改动待发布${pb.publishDueAt ? `（预计 ${fmtTime(pb.publishDueAt)} 自动发布）` : ''}`
+      : '当前没有待发布的改动'),
 )
+const publishing = ref(false)
+async function onPublishVersion() {
+  publishing.value = true
+  try {
+    const res = await publishVersionNow()
+    if (res?.published) {
+      ElMessage.success(`已发布数据版本 ${res.version}，手机端下拉刷新即可看到最新数据`)
+    } else {
+      ElMessage.info('当前没有待发布的改动，数据版本未变')
+    }
+  } catch (e) {
+    ElMessage.error(`发布失败：${e.message}`)
+  } finally {
+    publishing.value = false
+  }
+}
+
 const userName = computed(() => {
   const u = session.user
   return u?.displayName ? `${u.displayName}（${u.username}）` : u?.username ?? ''
@@ -35,13 +56,15 @@ async function logout() {
   router.replace('/login')
 }
 
+// 版本信息定时刷新（纯读的几十字节接口）：让顶栏的「有改动待发布」及时出现。
+let versionTimer = null
 onMounted(() => {
-  getVersion()
-    .then((m) => {
-      if (m?.appVersion) appMeta.value = m
-    })
-    .catch(() => {})
+  refreshVersion().catch(() => {})
+  versionTimer = window.setInterval(() => refreshVersion().catch(() => {}), 60000)
   if (!pb.contacts.length && !pb.loading) loadPhonebook({ silent: true })
+})
+onUnmounted(() => {
+  if (versionTimer) window.clearInterval(versionTimer)
 })
 </script>
 
@@ -106,8 +129,21 @@ onMounted(() => {
       <el-header class="topbar">
         <div class="crumb">{{ route.meta.title || '' }}</div>
         <div class="actions">
+          <!-- 有改动待发布：提醒管理员「手机端还没同步」，并提供立即发布 -->
+          <el-tooltip v-if="pb.pending" placement="bottom" :content="versionTitle">
+            <el-tag type="warning" effect="dark" class="pending-tag" @click="onPublishVersion">
+              有改动待发布{{ pb.publishDueAt ? ` · ${fmtTime(pb.publishDueAt)} 自动同步` : '' }}
+            </el-tag>
+          </el-tooltip>
+          <el-button
+            v-if="pb.pending"
+            type="primary"
+            size="small"
+            :loading="publishing"
+            @click="onPublishVersion"
+          >立即发布</el-button>
           <el-tag type="primary" effect="light" :title="versionTitle">
-            版本 {{ appMeta.appVersion || 'dev' }}
+            版本 {{ pb.appVersion || 'dev' }}
           </el-tag>
           <el-tooltip :content="roleText || ''" placement="bottom">
             <el-tag :type="isSuper ? 'danger' : 'warning'" effect="light" size="small">
@@ -133,8 +169,14 @@ onMounted(() => {
   <!-- 页脚：常驻显示 版本号 + 构建时间（各角色、各页面始终可见） -->
   <footer class="app-footer">
     <div class="f-inner">
-      <span class="f-left">石泉县通讯录管理系统 · 版本 {{ appMeta.appVersion || 'dev' }} · 构建 {{ fmtTime(appMeta.buildTime) }}</span>
-      <span class="f-right">数据版本 {{ appMeta.version }} · 结构 v{{ appMeta.schemaVersion }} · 更新于 {{ fmtTime(appMeta.updatedAt) }}</span>
+      <span class="f-left">石泉县通讯录管理系统 · 版本 {{ pb.appVersion || 'dev' }} · 构建 {{ fmtTime(pb.buildTime) }}</span>
+      <span class="f-right">
+        数据版本 {{ pb.version }} · 结构 v{{ pb.schemaVersion }} · 更新于 {{ fmtTime(pb.updatedAt) }}
+        <template v-if="pb.pending">
+          · <b class="pending-text">有改动待发布</b>
+          <template v-if="pb.publishDueAt">（{{ fmtTime(pb.publishDueAt) }} 自动同步）</template>
+        </template>
+      </span>
     </div>
   </footer>
   </div>
@@ -185,6 +227,8 @@ onMounted(() => {
 }
 .crumb { font-size: 16px; font-weight: 600; }
 .actions { display: flex; align-items: center; gap: 10px; }
+.pending-tag { cursor: pointer; }
+.pending-text { color: #fbbf24; }
 .who { display: inline-flex; align-items: center; gap: 4px; color: #475569; font-size: 13px; }
 .main { background: #f1f5f9; overflow: auto; }
 .app-footer {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrNotFound 表示按 id 找不到对应资源。
@@ -56,7 +57,8 @@ func contactScope(unitIDs []int64) (string, []any) {
 	return " WHERE c.unit_id IN (" + strings.Join(phs, ", ") + ")", args
 }
 
-// CreateContact 插入一条联系人，并在同一事务内递增数据版本（脏标记，客户端据此重新拉全量）。
+// CreateContact 插入一条联系人，并在同一事务内打「数据已变动」脏标记
+// （不递增版本号；静默窗口到期或管理员手动发布时才合并 +1，见 version.go）。
 func (s *Store) CreateContact(ctx context.Context, c Contact) (Contact, error) {
 	if ok, err := s.UnitExists(ctx, c.UnitID); err != nil {
 		return Contact{}, err
@@ -82,10 +84,10 @@ func (s *Store) CreateContact(ctx context.Context, c Contact) (Contact, error) {
 		return Contact{}, err
 	}
 	c.ID = id
-	if err := s.bumpVersion(ctx, tx); err != nil {
+	if err := s.markDataChanged(ctx, tx); err != nil {
 		return Contact{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitWrite(tx); err != nil {
 		return Contact{}, err
 	}
 	return s.contactByID(ctx, id)
@@ -131,10 +133,10 @@ func (s *Store) UpdateContact(ctx context.Context, id int64, c Contact) (Contact
 		return Contact{}, err
 	}
 	c.ID = id
-	if err := s.bumpVersion(ctx, tx); err != nil {
+	if err := s.markDataChanged(ctx, tx); err != nil {
 		return Contact{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitWrite(tx); err != nil {
 		return Contact{}, err
 	}
 	return s.contactByID(ctx, id)
@@ -159,7 +161,7 @@ func strPtrEq(a, b *string) bool {
 	return *a == *b
 }
 
-// DeleteContact 删除联系人并在同一事务内递增版本。不存在返回 ErrNotFound。
+// DeleteContact 删除联系人并打数据变动脏标记。不存在返回 ErrNotFound。
 func (s *Store) DeleteContact(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -174,10 +176,10 @@ func (s *Store) DeleteContact(ctx context.Context, id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	if err := s.bumpVersion(ctx, tx); err != nil {
+	if err := s.markDataChanged(ctx, tx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return s.commitWrite(tx)
 }
 
 // ListContacts 返回联系人（按单位排序，再按姓名排序，稳定）。
@@ -387,10 +389,10 @@ func nullToPtr(ns sql.NullString) *string {
 }
 
 // NormalizeContact 清理输入：号码归一（去分隔符 + 短固话补 0915 区号），主叫号兜底，
-// 去掉空字符串可选字段并 trim。返回规范化后的 Contact 与校验错误。
+// 姓名去掉全部空白，去掉空字符串可选字段并 trim。返回规范化后的 Contact 与校验错误。
 // 单位存在性校验在 Store 写路径（Create/Update/Import）内完成，保证不在存储层漏判。
 func NormalizeContact(c Contact) (Contact, error) {
-	c.DisplayName = strings.TrimSpace(c.DisplayName)
+	c.DisplayName = normalizeName(c.DisplayName)
 	c.PhoneNumber = normalizePhone(c.PhoneNumber)
 	c.Mobile2 = normalizePhonePtr(c.Mobile2)
 	c.Landline = normalizePhonePtr(c.Landline)
@@ -451,6 +453,49 @@ func normStrPtr(p *string) *string {
 	return &v
 }
 
+// normalizeName 姓名归一：**删除姓名中的全部空白**（半角/全角空格、制表符、不换行空格、
+// 零宽空格、BOM 等），只保留可见字符。
+//
+// 为什么必须删：导入以「单位+姓名」为关键字判断是覆盖还是新增，人手输入时一个多余的空格
+// （「张 三」vs「张三」）就会被当成两个人，从而建出重复记录。这里统一去掉，从源头消除。
+func normalizeName(s string) string {
+	if s == "" {
+		return ""
+	}
+	// 绝大多数姓名本来就没有空白：先扫一遍，没有空白就原样返回（省一次分配）。
+	hasSpace := false
+	for _, r := range s {
+		if isNameBlank(r) {
+			hasSpace = true
+			break
+		}
+	}
+	if !hasSpace {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isNameBlank(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// isNameBlank 判断是否属于「姓名里不允许出现的空白/隐形字符」。
+func isNameBlank(r rune) bool {
+	switch r {
+	case '\u00A0', // 不换行空格（从网页/Word 复制常见）
+		'\u3000', // 全角空格（中文输入法常见）
+		'\u200B', // 零宽空格
+		'\uFEFF': // BOM / 零宽不换行空格
+		return true
+	}
+	return unicode.IsSpace(r)
+}
+
 // normalizePhone 号码归一的单点权威：只保留 0-9，去掉空格/横杠/括号/加号/换行等一切分隔；
 // 纯 6~8 位且不以 0/1 开头的数字视为本县（安康 0915）短固话，自动补 0915 区号。
 // 11 位以 1 开头的手机号、已带区号（0 开头）的座机均原样保留。
@@ -497,7 +542,8 @@ func validPhone(p string) bool {
 
 // ResetDirectoryData 清空目录数据：删除全部联系人，再删除未被任何单位管理员绑定（user_units）
 // 的单位；被绑定的单位保留，避免破坏单位管理员的账号数据范围。
-// 不删 users/sessions/logs/meta。整个过程一个事务，且递增 data_version 让客户端重新拉全量。
+// 不删 users/sessions/logs/meta。整个过程一个事务，并打数据变动脏标记
+// （静默窗口到期或手动发布时合并 +1，触发一次全量重拉）。
 // 返回 (删除联系人, 删除单位, 保留单位)。调用方必须确保当前是 super 的一次性运维动作。
 func (s *Store) ResetDirectoryData(ctx context.Context) (contactsDeleted, unitsDeleted, unitsKept int, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -525,11 +571,11 @@ func (s *Store) ResetDirectoryData(ctx context.Context) (contactsDeleted, unitsD
 	ud, _ := res.RowsAffected()
 
 	if cd > 0 || ud > 0 {
-		if err := s.bumpVersion(ctx, tx); err != nil {
+		if err := s.markDataChanged(ctx, tx); err != nil {
 			return 0, 0, 0, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitWrite(tx); err != nil {
 		return 0, 0, 0, err
 	}
 	return int(cd), int(ud), unitsKept, nil

@@ -35,6 +35,8 @@ export const listContactsPaged = (params = {}) => {
   return api('GET', `/api/admin/contacts?${qs.toString()}`)
 }
 export const getVersion = () => api('GET', '/api/version')
+// 手动发布数据版本（管理员）：把待发布的改动马上合并成一次版本递增，手机端立刻能同步到
+export const publishVersion = () => api('POST', '/api/version/publish')
 export const createContact = (payload) => api('POST', '/api/contacts', payload)
 export const updateContact = (id, payload) => api('PUT', `/api/contacts/${id}`, payload)
 export const deleteContact = (id) => api('DELETE', `/api/contacts/${id}`)
@@ -72,6 +74,12 @@ export const fetchDuplicates = () => api('GET', '/api/duplicates')
 // 导出 CSV：走浏览器原生下载（带 Cookie 的同源 GET）。
 export function exportCSV() {
   window.location.href = '/api/contacts/export'
+}
+
+// 下载**空的**导入模板（只有表头、没有数据行）：填好后用「导入 CSV」上传。
+// 编码为 UTF-8 + BOM，Excel 双击不乱码；也可另存为 GB2312/GBK 再导入（服务端自动识别）。
+export function exportContactsTemplate() {
+  window.location.href = '/api/contacts/template'
 }
 
 // 导入 CSV：multipart 上传，返回 {imported, created, updated}。

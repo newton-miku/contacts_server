@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Download, Delete, Printer, Ticket, Upload } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
 import { session } from '../stores/session'
-import { pb, loadPhonebook } from '../stores/phonebook'
+import { pb, loadPhonebook, refreshVersion } from '../stores/phonebook'
 import {
   createActivationCodes,
   exportActivationCodesCSV,
@@ -32,6 +32,8 @@ const retentionInput = ref(30)
 const logRetentionInput = ref(90)
 const maintenanceTime = ref('03:30')
 const autoVacuum = ref(true)
+// 数据版本静默窗口（分钟）：最后一条改动后安静满这么久才发布（0 = 有改动即发布）
+const versionQuietInput = ref(15)
 const dbSize = ref(0)
 const vacuuming = ref(false)
 const cleaning = ref(false)
@@ -157,6 +159,7 @@ async function loadSettings() {
     logRetentionInput.value = s.logRetentionDays ?? 90
     maintenanceTime.value = s.maintenanceTime || '03:30'
     autoVacuum.value = s.autoVacuum !== false
+    versionQuietInput.value = s.versionQuietMinutes ?? 15
     dbSize.value = s.dbSizeBytes || 0
   } catch (_) {}
 }
@@ -345,8 +348,11 @@ async function saveSettings() {
       logRetentionDays: Number(logRetentionInput.value),
       maintenanceTime: maintenanceTime.value,
       autoVacuum: autoVacuum.value,
+      versionQuietMinutes: Number(versionQuietInput.value),
     })
     dailyLimit.value = res.activationDailyLimit
+    // 静默窗口可能变了 → 顶栏的「预计自动同步时间」跟着更新
+    refreshVersion().catch(() => {})
     ElMessage.success('设置已保存')
   } catch (e) {
     ElMessage.error(e.message)
@@ -452,6 +458,17 @@ async function saveSettings() {
         <el-input v-model="maintenanceTime" placeholder="03:30" style="width: 100px" />
         <el-switch v-model="autoVacuum" active-text="清理后自动整理数据库" />
         <span class="hint">低谷期自动执行清理（激活码/日志），有删除时再整理数据库</span>
+      </div>
+      <div class="limit-row" style="margin-top: 10px">
+        <span>数据发布间隔</span>
+        <el-input-number v-model="versionQuietInput" :min="0" :max="1440" />
+        <span class="hint">
+          单位：分钟（默认 15）。最后一条改动安静满这么久，才把改动合并成一次「数据版本」更新发布给手机端；
+          窗口内又有改动会重新计时，0 = 一有改动就发布。<br />
+          这样连续改多条记录只让手机端全量同步一次（避免服务器被反复拉全量）。
+          想马上生效：改完后点顶栏「立即发布」。
+          当前数据版本 <b>{{ pb.version }}</b><template v-if="pb.pending">（有改动待发布）</template>
+        </span>
       </div>
       <div class="limit-row" style="margin-top: 10px">
         <span>数据库大小</span>

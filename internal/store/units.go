@@ -163,7 +163,7 @@ func (s *Store) CreateUnit(ctx context.Context, name string, sortOrder int, isPu
 
 // EnsureUnits 为批量导入解析单位：返回「名称→id」映射，CSV 里出现但尚不存在的单位
 // （名称 trim 后非空）会在同一事务内自动创建，排序排在现有单位之后。返回值 created 是
-// 本批新建的单位（按首现顺序），供出错时回滚删除/记日志。新建空单位不递增 data_version
+// 本批新建的单位（按首现顺序），供出错时回滚删除/记日志。新建空单位不打数据变动脏标记
 // （不改变任何联系人数据，客户端无需重拉）。**导入时自动创建的单位默认设为公开单位
 // （is_public=1）**——即「导入的单位默认全公开」，这样手机只读/普通账号可见整本目录。
 func (s *Store) EnsureUnits(ctx context.Context, names []string) (byName map[string]int64, created []Unit, err error) {

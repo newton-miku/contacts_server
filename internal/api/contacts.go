@@ -2,8 +2,10 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"phonebook-server/internal/store"
 )
@@ -15,6 +17,8 @@ type snapshot struct {
 	Contacts  []store.Contact `json:"contacts"`
 }
 
+// currentVersion 读取当前数据版本与更新时间（纯读，无副作用）。
+// GET /api/contacts 用它给快照打版本号，必须在读取联系人之前调用（见 store.DataVersion）。
 func (s *Server) currentVersion(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
 	v, ts, err := s.store.DataVersion(r.Context())
 	if err != nil {
@@ -24,12 +28,18 @@ func (s *Server) currentVersion(w http.ResponseWriter, r *http.Request) (int64, 
 	return v, ts, true
 }
 
-// handleGetVersion 返回极小的版本信息，客户端据此判断是否需要拉全量：
-// version/updatedAt 是「数据版本」（每次写 +1，客户端缓存同步用）；
+// handleGetVersion 返回极小的版本信息，客户端据此判断是否需要拉全量。
+//
+// version/updatedAt 是「数据版本」：写操作只在自身事务里打脏标记、**不**递增版本号，
+// 版本号由后台发布器在「静默窗口」（最后一条改动之后满 version_quiet_minutes 没有新改动）
+// 到期后合并成一次 +1，管理员也可手动立即发布（POST /api/version/publish）。
+// 本接口是**纯读**、无副作用，客户端可以放心频繁探测。
+// pending/publishDueAt 表示「还有改动没发布、预计何时自动发布」，管理页据此提示并可手动发布；
 // appVersion/buildTime/schemaVersion 是运行版本、构建时刻与库结构版本（管理页展示/运维排查用）。
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
-	v, ts, ok := s.currentVersion(w, r)
-	if !ok {
+	st, err := s.store.VersionState(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取数据版本失败")
 		return
 	}
 	sv, err := s.store.SchemaVersion(r.Context())
@@ -37,12 +47,39 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取结构版本失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"version":       v,
-		"updatedAt":     ts,
+	quiet, _ := s.store.VersionQuietMinutes(r.Context())
+	out := map[string]any{
+		"version":       st.Version,
+		"updatedAt":     st.UpdatedAtRaw,
 		"appVersion":    BuildVersion,
 		"buildTime":     BuildTime,
 		"schemaVersion": sv,
+		"pending":       st.Pending,
+		"quietMinutes":  quiet,
+	}
+	if st.Pending {
+		if due := st.PublishDue(time.Duration(quiet) * time.Minute); !due.IsZero() {
+			out["publishDueAt"] = due.UTC().Format(time.RFC3339)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handlePublishVersion 管理员手动发布数据版本（super/unit/root，须已过强制改密）：
+// 把待发布的改动合并成一次版本递增，手机端下一次探测即拉全量（用于「改完号码想马上生效」）。
+// 没有待发布改动时不递增版本（幂等，可放心连点）。
+func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
+	v, published, err := s.store.PublishDataVersion(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "发布数据版本失败（数据库忙，请稍后重试）")
+		return
+	}
+	if published {
+		s.logAudit(r, store.LogCategoryContact, "publish_version",
+			fmt.Sprintf("手动发布数据版本（数据版本 %d）", v))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "version": v, "published": published,
 	})
 }
 
@@ -56,13 +93,16 @@ func (s *Server) handleListContacts(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
 		return
 	}
+	// 先读版本号、再读联系人（顺序不可颠倒）：若两者之间恰好有写入提交或版本发布，客户端
+	// 只会把「更新的数据」记在「更旧的版本号」下——下次探测版本必然不一致、触发重拉；
+	// 反过来则会出现「旧数据配新版本号」，客户端会误判为已最新而永远不再更新。
+	v, ts, ok := s.currentVersion(w, r)
+	if !ok {
+		return
+	}
 	contacts, err := s.store.ListContactsScoped(r.Context(), scope)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取联系人失败")
-		return
-	}
-	v, ts, ok := s.currentVersion(w, r)
-	if !ok {
 		return
 	}
 	if contacts == nil {
